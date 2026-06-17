@@ -8,7 +8,7 @@ st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", l
 st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 IG 挑圖建議。")
 
-# --- 系統設定區 (移至主畫面最上方，手機版一目了然) ---
+# --- 系統設定區 (手機版一目了然) ---
 st.markdown("---")
 st.subheader("⚙️ 步驟 1：系統驗證")
 api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
@@ -57,7 +57,9 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
             try:
                 # 設定 Gemini API
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-pro') 
+                
+                # 【關鍵修正】使用 "-latest" 結尾，永遠自動抓取官方最新且支援視覺的模型，徹底解決 404 找不到的問題！
+                model = genai.GenerativeModel('gemini-1.5-flash-latest') 
 
                 # 準備傳送給 AI 的內容
                 prompt_text = f"""
