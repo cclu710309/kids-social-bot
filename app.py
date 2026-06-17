@@ -8,36 +8,33 @@ st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", l
 st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 IG 挑圖建議。")
 
-# --- 側邊欄：設定 API 金鑰 ---
-with st.sidebar:
-    st.header("⚙️ 系統設定")
-    api_key = st.text_input("請輸入 Google Gemini API Key", type="password")
-    st.markdown("*(API Key 可於 Google AI Studio 免費申請)*")
-    st.markdown("---")
-    st.markdown("**小鳥幼兒園品牌設定**\n- 理念：everythingforkids\n- 特色：自然探索、生活自理\n- IG 限制：最多 10 張照片")
+# --- 系統設定區 (移至主畫面最上方，手機版一目了然) ---
+st.markdown("---")
+st.subheader("⚙️ 步驟 1：系統驗證")
+api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
+if not api_key:
+    st.warning("請先輸入金鑰以解鎖 AI 功能。")
 
-# --- 主畫面：參數設定區 ---
+# --- 參數設定區 ---
+st.markdown("---")
+st.subheader("📝 步驟 2：活動資訊與貼文定調")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("1. 活動資訊")
     keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...")
-    
-    st.subheader("2. 貼文定調 (單選)")
     post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "體能/戶外", "園所公告"], horizontal=True)
     perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True)
     text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "單詞標籤 (僅詞彙堆疊)", "微故事 (簡短敘述)"], horizontal=True)
 
 with col2:
-    st.subheader("3. 複合風格 (可複選)")
-    tone = st.multiselect("🎨 語氣與氛圍", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"])
-    edu = st.multiselect("💡 教育理念", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
-    cta = st.multiselect("🎯 互動目標", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
+    tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"])
+    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
+    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
 
 # --- 照片上傳區 ---
 st.markdown("---")
-st.subheader("📸 4. 匯入照片 (支援多張上傳)")
-uploaded_files = st.file_uploader("請拖曳或選擇活動照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
+st.subheader("📸 步驟 3：匯入照片 (支援多張上傳)")
+uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
 
 if uploaded_files:
     st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
@@ -49,9 +46,10 @@ if uploaded_files:
         st.write(f"...等共 {len(uploaded_files)} 張")
 
 # --- 執行生成 ---
-if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, type="primary"):
+st.markdown("---")
+if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_width=True, type="primary"):
     if not api_key:
-        st.error("請先在左側欄位輸入 Gemini API Key！")
+        st.error("請先在最上方輸入 Gemini API Key！")
     elif not uploaded_files:
         st.error("請至少上傳一張照片！")
     else:
@@ -59,12 +57,11 @@ if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, 
             try:
                 # 設定 Gemini API
                 genai.configure(api_key=api_key)
-                # 使用最新支援視覺的模型版本
                 model = genai.GenerativeModel('gemini-1.5-pro') 
 
                 # 準備傳送給 AI 的內容
                 prompt_text = f"""
-                你是小鳥幼兒園的專業社群小編。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
+                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
 
                 【核心設定】
                 - 關鍵字：{keywords}
@@ -88,18 +85,14 @@ if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, 
                 (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
                 """
 
-                # 將上傳的圖片轉為 PIL 格式
                 image_parts = []
                 for file in uploaded_files:
                     img = Image.open(file)
                     image_parts.append(img)
                 
-                # 傳送給 AI
                 response = model.generate_content([prompt_text] + image_parts)
                 
-                # 解析並顯示結果
                 st.success("產出成功！請複製以下內容至 Meta 排程：")
-                
                 st.markdown("### 📊 AI 處理結果")
                 st.text_area("您可以直接複製以下全部內容", value=response.text, height=400)
 
