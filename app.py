@@ -12,7 +12,7 @@ st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 
 with st.sidebar:
     st.header("⚙️ 系統設定")
     api_key = st.text_input("請輸入 Google Gemini API Key", type="password")
-    st.markdown("*(把您剛剛存好的鑰匙貼在這裡)*")
+    st.markdown("*(API Key 可於 Google AI Studio 免費申請)*")
     st.markdown("---")
     st.markdown("**小鳥幼兒園品牌設定**\n- 理念：everythingforkids\n- 特色：自然探索、生活自理\n- IG 限制：最多 10 張照片")
 
@@ -37,10 +37,11 @@ with col2:
 # --- 照片上傳區 ---
 st.markdown("---")
 st.subheader("📸 4. 匯入照片 (支援多張上傳)")
-uploaded_files = st.file_uploader("請拖曳或選擇活動照片", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+uploaded_files = st.file_uploader("請拖曳或選擇活動照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
 
 if uploaded_files:
-    st.info(f"已上傳 {len(uploaded_files)} 張照片。")
+    st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
+    # 縮圖預覽
     cols = st.columns(min(len(uploaded_files), 5))
     for i, file in enumerate(uploaded_files[:5]):
         cols[i].image(file, use_container_width=True, caption=file.name)
@@ -56,9 +57,12 @@ if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, 
     else:
         with st.spinner("AI 正在看照片、挑選並撰寫文案中，請稍候..."):
             try:
+                # 設定 Gemini API
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                
+                # 使用最新支援視覺的模型版本
+                model = genai.GenerativeModel('gemini-1.5-pro') 
+
+                # 準備傳送給 AI 的內容
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
 
@@ -69,7 +73,7 @@ if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, 
 
                 【任務 1：IG 智能挑圖】
                 目前共 {len(uploaded_files)} 張照片。IG 最多只能放 10 張。
-                請從中挑選出最精華、最適合 IG 的 <=10 張照片，並列出它們的「檔案名稱」。
+                請從中挑選出最精華、最適合 IG（例如有清晰笑容、構圖好）的 <=10 張照片，並列出它們的「檔案名稱」。
 
                 【任務 2：撰寫雙平台文案】
                 請嚴格按照以下格式輸出，不加任何廢話：
@@ -84,12 +88,20 @@ if st.button("✨ 一鍵分析照片並產出貼文", use_container_width=True, 
                 (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
                 """
 
-                image_parts = [Image.open(file) for file in uploaded_files]
+                # 將上傳的圖片轉為 PIL 格式
+                image_parts = []
+                for file in uploaded_files:
+                    img = Image.open(file)
+                    image_parts.append(img)
+                
+                # 傳送給 AI
                 response = model.generate_content([prompt_text] + image_parts)
                 
+                # 解析並顯示結果
                 st.success("產出成功！請複製以下內容至 Meta 排程：")
+                
                 st.markdown("### 📊 AI 處理結果")
                 st.text_area("您可以直接複製以下全部內容", value=response.text, height=400)
 
             except Exception as e:
-                st.error(f"發生錯誤：{e}")
+                st.error(f"發生錯誤：{e}\n請確認 API 金鑰是否正確，或稍後再試。")
