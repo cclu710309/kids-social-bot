@@ -8,7 +8,7 @@ st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", l
 st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 IG 挑圖建議。")
 
-# --- 系統設定區 (手機版一目了然) ---
+# --- 系統設定區 ---
 st.markdown("---")
 st.subheader("⚙️ 步驟 1：系統驗證")
 api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
@@ -38,7 +38,6 @@ uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇照片", typ
 
 if uploaded_files:
     st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
-    # 縮圖預覽
     cols = st.columns(min(len(uploaded_files), 5))
     for i, file in enumerate(uploaded_files[:5]):
         cols[i].image(file, use_container_width=True, caption=file.name)
@@ -53,15 +52,32 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
     elif not uploaded_files:
         st.error("請至少上傳一張照片！")
     else:
-        with st.spinner("AI 正在看照片、挑選並撰寫文案中，請稍候..."):
+        with st.spinner("系統正在自動偵測可用 AI 模型並撰寫文案中，請稍候..."):
             try:
-                # 設定 Gemini API
+                # 1. 綁定金鑰
                 genai.configure(api_key=api_key)
                 
-                # 【關鍵修正】使用 "-latest" 結尾，永遠自動抓取官方最新且支援視覺的模型，徹底解決 404 找不到的問題！
-                model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+                # 2. 終極防呆：自動抓取您的帳號專屬可用模型清單
+                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                
+                target_model = None
+                if "models/gemini-1.5-flash" in available_models:
+                    target_model = "models/gemini-1.5-flash"
+                elif "models/gemini-1.5-pro" in available_models:
+                    target_model = "models/gemini-1.5-pro"
+                elif "models/gemini-1.0-pro-vision-latest" in available_models:
+                    target_model = "models/gemini-1.0-pro-vision-latest"
+                elif available_models:
+                    target_model = available_models[0] # 抓取清單中第一個可用的
+                    
+                if not target_model:
+                    st.error("錯誤：您的 API 金鑰沒有視覺模型的存取權限，請重新產生一把。")
+                    st.stop()
 
-                # 準備傳送給 AI 的內容
+                # 3. 載入模型
+                model = genai.GenerativeModel(target_model) 
+
+                # 4. 準備指令
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
 
@@ -72,31 +88,26 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
 
                 【任務 1：IG 智能挑圖】
                 目前共 {len(uploaded_files)} 張照片。IG 最多只能放 10 張。
-                請從中挑選出最精華、最適合 IG（例如有清晰笑容、構圖好）的 <=10 張照片，並列出它們的「檔案名稱」。
+                請從中挑選出最精華、最適合 IG 的 <=10 張照片，並列出它們的「檔案名稱」。
 
                 【任務 2：撰寫雙平台文案】
-                請嚴格按照以下格式輸出，不加任何廢話：
-
+                請嚴格按照以下格式輸出：
                 === IG 挑圖建議 ===
                 (列出挑選出的檔案名稱清單，並簡述挑選原因)
-
                 === IG 貼文 ===
                 (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等 Hashtag)
-
                 === FB 貼文 ===
                 (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
                 """
 
-                image_parts = []
-                for file in uploaded_files:
-                    img = Image.open(file)
-                    image_parts.append(img)
+                image_parts = [Image.open(file) for file in uploaded_files]
                 
+                # 5. 送出請求
                 response = model.generate_content([prompt_text] + image_parts)
                 
-                st.success("產出成功！請複製以下內容至 Meta 排程：")
+                st.success(f"🎉 產出成功！（系統自動為您選用最適合的模型：{target_model}）")
                 st.markdown("### 📊 AI 處理結果")
                 st.text_area("您可以直接複製以下全部內容", value=response.text, height=400)
 
             except Exception as e:
-                st.error(f"發生錯誤：{e}\n請確認 API 金鑰是否正確，或稍後再試。")
+                st.error(f"發生嚴重錯誤：{e}\n請確認 API 金鑰是否正確，並確保您上傳的是一般圖片格式。")
