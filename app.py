@@ -3,6 +3,7 @@ import google.generativeai as genai
 from PIL import Image
 import os
 import base64
+import re
 
 # --- 頁面設定 (瀏覽器分頁圖示) ---
 if os.path.exists("logo.png"):
@@ -14,11 +15,9 @@ else:
 # --- 標題與 Logo 區 (網頁級 Flexbox 雙排版優化) ---
 if os.path.exists("logo.png"):
     try:
-        # 將圖片轉換為網頁編碼，以達到手機/電腦絕對不變形的完美並排效果
         with open("logo.png", "rb") as f:
             encoded_img = base64.b64encode(f.read()).decode()
         
-        # 核心網頁排版：強迫並排、限制 Logo 大小、防止縮放變形
         header_html = f"""
         <div style="display: flex; align-items: center; gap: 15px; margin-top: 10px; margin-bottom: 20px;">
             <img src="data:image/png;base64,{encoded_img}" style="width: 60px; height: 60px; object-fit: contain; flex-shrink: 0;">
@@ -53,7 +52,7 @@ with col1:
 
 with col2:
     tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"])
-    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專专力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
+    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
     cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
 
 # --- 照片上傳區 ---
@@ -90,14 +89,14 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
                 - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
 
-                【任務 1：IG 智能挑圖】
-                目前共 {len(uploaded_files)} 張照片。IG 最多只能放 10 張。
-                請從中挑選出最精華、最適合 IG 的 <=10 張照片，並列出它們的「檔案名稱」。
+                【任務 1：IG 智能挑圖與排序】
+                目前共 {len(uploaded_files)} 張照片。請挑選出最適合發佈的 <=10 張照片。
+                你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的檔案名稱（以半形逗號分隔，不要加其他字）：
+                [SELECTED_IMAGES]檔名1.jpg,檔名2.png[/SELECTED_IMAGES]
 
                 【任務 2：撰寫雙平台文案】
-                請嚴格按照以下格式輸出：
                 === IG 挑圖建議 ===
-                (列出挑選出的檔案名稱清單，並簡述挑選原因)
+                (簡述為什麼挑選這幾張，以及建議的順序)
                 === IG 貼文 ===
                 (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等 Hashtag)
                 === FB 貼文 ===
@@ -106,10 +105,34 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
 
                 image_parts = [Image.open(file) for file in uploaded_files]
                 response = model.generate_content([prompt_text] + image_parts)
+                response_text = response.text
                 
                 st.success("🎉 文案與挑圖建議皆已順利產出！")
-                st.markdown("### 📊 AI 處理結果")
-                st.text_area("您可以直接複製以下全部內容", value=response.text, height=400)
+                
+                # 解析 AI 暗號並展示精選照片
+                match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
+                
+                if match:
+                    st.markdown("### 🏆 AI 嚴選最佳照片")
+                    # 特別加上給老師的提示
+                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」** 或 **「下載圖片」**，就能立刻存進手機相簿直接發文囉！")
+                    
+                    raw_filenames = match.group(1).split(',')
+                    selected_filenames = [name.strip() for name in raw_filenames]
+                    selected_files = [f for f in uploaded_files if f.name in selected_filenames]
+                    
+                    if selected_files:
+                        # 為了讓手機長按更方便，這裡改成每列兩張圖，圖片會比較大、比較好點擊
+                        img_cols = st.columns(2)
+                        for idx, s_file in enumerate(selected_files):
+                            img_cols[idx % 2].image(s_file, use_container_width=True)
+                    else:
+                        st.warning("系統有收到 AI 的挑選名單，但找不到對應的檔案，請直接參考下方文字建議。")
+                
+                clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
+                
+                st.markdown("### 📊 文案與詳細建議")
+                st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
 
             except Exception as e:
                 st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：請確認您的 API 金鑰是否複製完整。若依然報錯，可能需要重新建立一把新的 API Key 再試試看。")
