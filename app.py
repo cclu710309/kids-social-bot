@@ -13,6 +13,10 @@ if os.path.exists("logo.png"):
 else:
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
+# --- 🚀 核心優化：一鍵重置機制 ---
+if "reset_counter" not in st.session_state:
+    st.session_state.reset_counter = 0
+
 # --- 標題與 Logo 區 ---
 if os.path.exists("logo.png"):
     try:
@@ -33,39 +37,40 @@ else:
 
 st.markdown("上傳活動照片或單一影片，設定風格，一鍵產出雙平台文案。")
 
-# --- 系統設定區 ---
+# --- 系統設定區 (獨立出來，不參與重置) ---
 st.markdown("---")
 st.subheader("⚙️ 步驟 1：系統驗證")
 api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
 if not api_key:
     st.warning("請先輸入金鑰以解鎖 AI 功能。")
 
-# --- 參數設定區 ---
+# --- 參數設定區 (綁定重置計數器) ---
 st.markdown("---")
 st.subheader("📝 步驟 2：活動資訊與貼文定調")
 col1, col2 = st.columns(2)
 
+# 透過動態 key 機制，只要計數器變更，所有欄位就會強制清空回預設值
 with col1:
-    keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...")
-    post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "體能/戶外", "園所公告"], horizontal=True)
-    perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True)
-    text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "單詞標籤 (僅詞彙堆疊)", "微故事 (簡短敘述)"], horizontal=True)
+    keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...", key=f"keywords_{st.session_state.reset_counter}")
+    post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "體能/戶外", "園所公告"], horizontal=True, key=f"post_type_{st.session_state.reset_counter}")
+    perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True, key=f"perspective_{st.session_state.reset_counter}")
+    text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "單詞標籤 (僅詞彙堆疊)", "微故事 (簡短敘述)"], horizontal=True, key=f"text_length_{st.session_state.reset_counter}")
 
 with col2:
-    tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"])
-    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
-    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
+    tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"], key=f"tone_{st.session_state.reset_counter}")
+    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"], key=f"edu_{st.session_state.reset_counter}")
+    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
 
-# --- 模式與檔案上傳區 ---
+# --- 模式與檔案上傳區 (綁定重置計數器) ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材")
-upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True)
+upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True, key=f"upload_mode_{st.session_state.reset_counter}")
 
 uploaded_files = None
 uploaded_video = None
 
 if "多張活動照片" in upload_mode:
-    uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"files_{st.session_state.reset_counter}")
     if uploaded_files:
         st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
         cols = st.columns(min(len(uploaded_files), 5))
@@ -74,14 +79,25 @@ if "多張活動照片" in upload_mode:
         if len(uploaded_files) > 5:
             st.write(f"...等共 {len(uploaded_files)} 張")
 else:
-    uploaded_video = st.file_uploader("請上傳一段活動影片", type=['mp4', 'mov', 'avi', 'mkv'], accept_multiple_files=False)
+    uploaded_video = st.file_uploader("請上傳一段活動影片", type=['mp4', 'mov', 'avi', 'mkv'], accept_multiple_files=False, key=f"video_{st.session_state.reset_counter}")
     if uploaded_video:
         st.success("🎥 影片上傳成功！網頁端僅做預覽與 AI 分析，不需要重複下載。")
         st.video(uploaded_video)
 
-# --- 執行生成 ---
+# --- 執行與操作按鈕區 ---
 st.markdown("---")
-if st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_width=True, type="primary"):
+btn_col1, btn_col2 = st.columns([3, 1])
+
+with btn_col1:
+    generate_btn = st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_width=True, type="primary")
+
+with btn_col2:
+    # 點擊此按鈕，更動計數器並引發頁面刷新，達成一鍵閃電清空的效果
+    if st.button("🔄 一鍵清空 / 開始下一篇", use_container_width=True):
+        st.session_state.reset_counter += 1
+        st.rerun()
+
+if generate_btn:
     if not api_key:
         st.error("請先在最上方輸入 Gemini API Key！")
     elif "多張活動照片" in upload_mode and not uploaded_files:
@@ -139,7 +155,6 @@ if st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_w
                     
                     st.success("🎉 照片文案與挑選皆已順利產出！")
                     
-                    # 解析 AI 回傳的數字暗號並顯示照片
                     match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
                     if match:
                         st.markdown("### 🏆 AI 嚴選最佳照片")
@@ -167,12 +182,10 @@ if st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_w
 
                 # --- 模式 2：單一影片處理邏輯 ---
                 else:
-                    # 將 Streamlit 的上傳檔案轉存為暫存檔，讓 Gemini API 能讀取影片
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 透過 Gemini API 上傳並處理影片
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     prompt_text = f"""
@@ -194,7 +207,6 @@ if st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_w
                     response = model.generate_content([prompt_text, video_file_ai])
                     response_text = response.text
                     
-                    # 刪除本機暫存檔
                     os.remove(temp_video_path)
                     
                     st.success("🎉 影片短影音文案已順利產出！")
