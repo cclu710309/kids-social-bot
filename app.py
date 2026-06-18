@@ -92,30 +92,30 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
 
                 model = genai.GenerativeModel(target_model) 
 
-                # 更改 Prompt 指令：強制 AI 用「數字數字」來回傳
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張為 1，第二張為 2，依此類推）。
+                我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張序號為 1，第二張為 2，依此類推）。
                 
-                請分析這些照片，並依據以下設定完成任務：
+                請嚴格遵守以下指示分析照片並完成任務：
 
                 【核心設定】
                 - 關鍵字：{keywords}
                 - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
                 - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
 
-                【任務 1：IG 智能挑圖與排序】
-                請從這 {len(uploaded_files)} 張照片中，挑選出最適合發佈的 <=10 張照片。
-                你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字或英文字母）：
-                [SELECTED_IMAGES]1,3,5,6[/SELECTED_IMAGES]
+                【任務 1：IG 智能挑圖 - 必須挑滿 10 張】
+                - 如果上傳總數大於或等於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩、最具有故事性與排序邏輯的照片。
+                - 如果上傳總數小於 10 張，則將所有照片全選並依最佳效果排序。
+                - 你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母）：
+                [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                 【任務 2：撰寫雙平台文案】
                 === IG 挑圖建議 ===
-                (簡述為什麼挑選這幾張，以及建議的順序)
+                (簡述為什麼精選這 10 張，以及建議的順序)
                 === IG 貼文 ===
-                (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等 Hashtag)
+                (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等相關社群標籤)
                 === FB 貼文 ===
-                (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
+                (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
                 """
 
                 image_parts = [Image.open(file) for file in uploaded_files]
@@ -138,7 +138,7 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                     for idx_str in raw_indices:
                         idx_str = idx_str.strip()
                         if idx_str.isdigit():
-                            idx = int(idx_str) - 1 # 換算成 Python 索引
+                            idx = int(idx_str) - 1
                             if 0 <= idx < len(uploaded_files):
                                 selected_files.append(uploaded_files[idx])
                     
