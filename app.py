@@ -3,18 +3,22 @@ import google.generativeai as genai
 from PIL import Image
 import os
 
-# --- 頁面設定 (包含瀏覽器分頁圖示替換) ---
-# 這裡已經幫您改成讀取 logo.png 了！
+# --- 頁面設定 (瀏覽器分頁圖示) ---
 if os.path.exists("logo.png"):
     logo_img = Image.open("logo.png")
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=logo_img, layout="wide")
 else:
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
-# --- 標題與 Logo 區 ---
+# --- 標題與 Logo 區 (左右並排美化版) ---
 if os.path.exists("logo.png"):
-    st.image("logo.png", width=120) # 自動調整為最適合手機與電腦的大小
-    st.title("小鳥幼兒園專屬：AI 社群發文系統")
+    # 建立兩欄：左邊放 Logo，右邊放系統標題
+    col_logo, col_title = st.columns([1, 6])
+    with col_logo:
+        st.image("logo.png", use_container_width=True)
+    with col_title:
+        # 使用 HTML 語法讓標題文字稍微向下對齊，與圓形 Logo 完美並排
+        st.markdown("<h2 style='margin-top: 25px; font-weight: bold;'>小鳥幼兒園專屬：AI 社群發文系統</h2>", unsafe_allow_html=True)
 else:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 
@@ -64,28 +68,13 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
     elif not uploaded_files:
         st.error("請至少上傳一張照片！")
     else:
-        with st.spinner("系統正在自動偵測可用 AI 模型並撰寫文案中，請稍候..."):
+        with st.spinner("系統正在深度分析照片並撰寫精美文案中，請稍候..."):
             try:
+                # 核心修正：配置 API 金鑰
                 genai.configure(api_key=api_key)
                 
-                # 自動抓取您的帳號專屬可用模型清單
-                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                
-                target_model = None
-                if "models/gemini-1.5-flash" in available_models:
-                    target_model = "models/gemini-1.5-flash"
-                elif "models/gemini-1.5-pro" in available_models:
-                    target_model = "models/gemini-1.5-pro"
-                elif "models/gemini-1.0-pro-vision-latest" in available_models:
-                    target_model = "models/gemini-1.0-pro-vision-latest"
-                elif available_models:
-                    target_model = available_models[0]
-                    
-                if not target_model:
-                    st.error("錯誤：您的 API 金鑰沒有視覺模型的存取權限，請重新產生一把。")
-                    st.stop()
-
-                model = genai.GenerativeModel(target_model) 
+                # 核心修正：直接指定最穩定、支援圖片分析的標準模型，解決 404 錯誤
+                model = genai.GenerativeModel('gemini-1.5-flash') 
 
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
@@ -109,12 +98,15 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
                 """
 
+                # 讀取所有上傳的照片檔案
                 image_parts = [Image.open(file) for file in uploaded_files]
+                
+                # 呼叫 AI 送出請求
                 response = model.generate_content([prompt_text] + image_parts)
                 
-                st.success(f"🎉 產出成功！（系統自動為您選用最適合的模型：{target_model}）")
+                st.success("🎉 文案與挑圖建議皆已順利產出！")
                 st.markdown("### 📊 AI 處理結果")
                 st.text_area("您可以直接複製以下全部內容", value=response.text, height=400)
 
             except Exception as e:
-                st.error(f"發生嚴重錯誤：{e}\n請確認 API 金鑰是否正確，並確保您上傳的是一般圖片格式。")
+                st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：請確認您的 API 金鑰是否複製完整。若依然報錯，可能需要重新建立一把新的 API Key 再試試看。")
