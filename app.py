@@ -79,7 +79,23 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
         with st.spinner("系統正在深度分析照片並撰寫精美文案中，請稍候..."):
             try:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash') 
+                
+                # --- 核心修正：自動偵測可用模型，徹底解決 404 找不到名字的問題 ---
+                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                target_model = None
+                
+                # 按照優先順序尋找您的金鑰真正支援的模型名稱
+                for m in ["models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-1.5-pro-latest", "models/gemini-1.5-pro", "models/gemini-pro-vision"]:
+                    if m in available_models:
+                        target_model = m
+                        break
+                        
+                # 如果都找不到，就抓取清單中第一個可用的
+                if not target_model:
+                    target_model = available_models[0] if available_models else "models/gemini-1.5-flash-latest"
+
+                model = genai.GenerativeModel(target_model) 
+                # -------------------------------------------------------------
 
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
@@ -107,22 +123,20 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 response = model.generate_content([prompt_text] + image_parts)
                 response_text = response.text
                 
-                st.success("🎉 文案與挑圖建議皆已順利產出！")
+                st.success(f"🎉 產出成功！（系統本次自動為您匹配的模型為：{target_model}）")
                 
                 # 解析 AI 暗號並展示精選照片
                 match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
                 
                 if match:
                     st.markdown("### 🏆 AI 嚴選最佳照片")
-                    # 特別加上給老師的提示
-                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」** 或 **「下載圖片」**，就能立刻存進手機相簿直接發文囉！")
+                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
                     
                     raw_filenames = match.group(1).split(',')
                     selected_filenames = [name.strip() for name in raw_filenames]
                     selected_files = [f for f in uploaded_files if f.name in selected_filenames]
                     
                     if selected_files:
-                        # 為了讓手機長按更方便，這裡改成每列兩張圖，圖片會比較大、比較好點擊
                         img_cols = st.columns(2)
                         for idx, s_file in enumerate(selected_files):
                             img_cols[idx % 2].image(s_file, use_container_width=True)
@@ -135,4 +149,4 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
 
             except Exception as e:
-                st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：請確認您的 API 金鑰是否複製完整。若依然報錯，可能需要重新建立一把新的 API Key 再試試看。")
+                st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：若持續報錯，請確認您的 API 金鑰是否正確。")
