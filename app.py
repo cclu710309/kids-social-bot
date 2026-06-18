@@ -1,11 +1,23 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
+import os
 
-# --- 頁面設定 ---
-st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
+# --- 頁面設定 (包含瀏覽器分頁圖示替換) ---
+# 這裡已經幫您改成讀取 logo.png 了！
+if os.path.exists("logo.png"):
+    logo_img = Image.open("logo.png")
+    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=logo_img, layout="wide")
+else:
+    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
-st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
+# --- 標題與 Logo 區 ---
+if os.path.exists("logo.png"):
+    st.image("logo.png", width=120) # 自動調整為最適合手機與電腦的大小
+    st.title("小鳥幼兒園專屬：AI 社群發文系統")
+else:
+    st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
+
 st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 IG 挑圖建議。")
 
 # --- 系統設定區 ---
@@ -54,10 +66,9 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
     else:
         with st.spinner("系統正在自動偵測可用 AI 模型並撰寫文案中，請稍候..."):
             try:
-                # 1. 綁定金鑰
                 genai.configure(api_key=api_key)
                 
-                # 2. 終極防呆：自動抓取您的帳號專屬可用模型清單
+                # 自動抓取您的帳號專屬可用模型清單
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 
                 target_model = None
@@ -68,16 +79,14 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 elif "models/gemini-1.0-pro-vision-latest" in available_models:
                     target_model = "models/gemini-1.0-pro-vision-latest"
                 elif available_models:
-                    target_model = available_models[0] # 抓取清單中第一個可用的
+                    target_model = available_models[0]
                     
                 if not target_model:
                     st.error("錯誤：您的 API 金鑰沒有視覺模型的存取權限，請重新產生一把。")
                     st.stop()
 
-                # 3. 載入模型
                 model = genai.GenerativeModel(target_model) 
 
-                # 4. 準備指令
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
 
@@ -101,8 +110,6 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 """
 
                 image_parts = [Image.open(file) for file in uploaded_files]
-                
-                # 5. 送出請求
                 response = model.generate_content([prompt_text] + image_parts)
                 
                 st.success(f"🎉 產出成功！（系統自動為您選用最適合的模型：{target_model}）")
