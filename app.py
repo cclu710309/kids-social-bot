@@ -4,6 +4,7 @@ from PIL import Image
 import os
 import base64
 import re
+import tempfile
 
 # --- 頁面設定 (瀏覽器分頁圖示) ---
 if os.path.exists("logo.png"):
@@ -30,7 +31,7 @@ if os.path.exists("logo.png"):
 else:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 
-st.markdown("上傳活動照片，設定風格，一鍵產出雙平台文案與 IG 挑圖建議。")
+st.markdown("上傳活動照片或單一影片，設定風格，一鍵產出雙平台文案。")
 
 # --- 系統設定區 ---
 st.markdown("---")
@@ -55,28 +56,40 @@ with col2:
     edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
     cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
 
-# --- 照片上傳區 ---
+# --- 模式與檔案上傳區 ---
 st.markdown("---")
-st.subheader("📸 步驟 3：匯入照片 (支援多張上傳)")
-uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
+st.subheader("📸 步驟 3：匯入素材")
+upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True)
 
-if uploaded_files:
-    st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
-    cols = st.columns(min(len(uploaded_files), 5))
-    for i, file in enumerate(uploaded_files[:5]):
-        cols[i].image(file, use_container_width=True, caption=f"第 {i+1} 張照片")
-    if len(uploaded_files) > 5:
-        st.write(f"...等共 {len(uploaded_files)} 張")
+uploaded_files = None
+uploaded_video = None
+
+if "多張活動照片" in upload_mode:
+    uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True)
+    if uploaded_files:
+        st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
+        cols = st.columns(min(len(uploaded_files), 5))
+        for i, file in enumerate(uploaded_files[:5]):
+            cols[i].image(file, use_container_width=True, caption=f"第 {i+1} 張照片")
+        if len(uploaded_files) > 5:
+            st.write(f"...等共 {len(uploaded_files)} 張")
+else:
+    uploaded_video = st.file_uploader("請上傳一段活動影片", type=['mp4', 'mov', 'avi', 'mkv'], accept_multiple_files=False)
+    if uploaded_video:
+        st.success("🎥 影片上傳成功！網頁端僅做預覽與 AI 分析，不需要重複下載。")
+        st.video(uploaded_video)
 
 # --- 執行生成 ---
 st.markdown("---")
-if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_width=True, type="primary"):
+if st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_width=True, type="primary"):
     if not api_key:
         st.error("請先在最上方輸入 Gemini API Key！")
-    elif not uploaded_files:
+    elif "多張活動照片" in upload_mode and not uploaded_files:
         st.error("請至少上傳一張照片！")
+    elif "單一活動影片" in upload_mode and not uploaded_video:
+        st.error("請先上傳影片檔案！")
     else:
-        with st.spinner("系統正在深度分析照片並撰寫精美文案中，請稍候..."):
+        with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
                 genai.configure(api_key=api_key)
                 
@@ -92,67 +105,101 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
 
                 model = genai.GenerativeModel(target_model) 
 
-                prompt_text = f"""
-                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張序號為 1，第二張為 2，依此類推）。
-                
-                請嚴格遵守以下指示分析照片並完成任務：
-
-                【核心設定】
-                - 關鍵字：{keywords}
-                - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
-                - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
-
-                【任務 1：IG 智能挑圖 - 必須挑滿 10 張】
-                - 如果上傳總數大於或等於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩、最具有故事性與排序邏輯的照片。
-                - 如果上傳總數小於 10 張，則將所有照片全選並依最佳效果排序。
-                - 你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母）：
-                [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
-
-                【任務 2：撰寫雙平台文案】
-                === IG 挑圖建議 ===
-                (簡述為什麼精選這 10 張，以及建議的順序)
-                === IG 貼文 ===
-                (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等相關社群標籤)
-                === FB 貼文 ===
-                (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
-                """
-
-                image_parts = [Image.open(file) for file in uploaded_files]
-                response = model.generate_content([prompt_text] + image_parts)
-                response_text = response.text
-                
-                st.success("🎉 產出成功！")
-                
-                # 解析 AI 回傳的數字暗號
-                match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
-                
-                if match:
-                    st.markdown("### 🏆 AI 嚴選最佳照片")
-                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
+                # --- 模式 1：多張照片處理邏輯 ---
+                if "多張活動照片" in upload_mode:
+                    prompt_text = f"""
+                    你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
+                    我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張序號為 1，第二張為 2，依此類推）。
                     
-                    raw_indices = match.group(1).split(',')
-                    selected_files = []
+                    請嚴格遵守以下指示分析照片並完成任務：
+
+                    【核心設定】
+                    - 關鍵字：{keywords}
+                    - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
+                    - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
+
+                    【任務 1：IG 智能挑圖 - 必須挑滿 10 張】
+                    - 如果上傳總數大於或等於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩、最具有故事性與排序邏輯的照片。
+                    - 如果上傳總數小於 10 張，則將所有照片全選並依最佳效果排序。
+                    - 你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母）：
+                    [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
+
+                    【任務 2：撰寫雙平台文案】
+                    === IG 挑圖建議 ===
+                    (簡述為什麼精選這 10 張，以及建議的順序)
+                    === IG 貼文 ===
+                    (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等相關社群標籤)
+                    === FB 貼文 ===
+                    (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
+                    """
+
+                    image_parts = [Image.open(file) for file in uploaded_files]
+                    response = model.generate_content([prompt_text] + image_parts)
+                    response_text = response.text
                     
-                    # 根據數字把原圖撈出來
-                    for idx_str in raw_indices:
-                        idx_str = idx_str.strip()
-                        if idx_str.isdigit():
-                            idx = int(idx_str) - 1
-                            if 0 <= idx < len(uploaded_files):
-                                selected_files.append(uploaded_files[idx])
+                    st.success("🎉 照片文案與挑選皆已順利產出！")
                     
-                    if selected_files:
-                        img_cols = st.columns(2)
-                        for idx, s_file in enumerate(selected_files):
-                            img_cols[idx % 2].image(s_file, use_container_width=True, caption=f"精選第 {idx+1} 張")
-                    else:
-                        st.warning("系統收到挑選名單，但無法正確解析圖片，請參考下方文字建議。")
-                
-                clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
-                
-                st.markdown("### 📊 文案與詳細建議")
-                st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
+                    # 解析 AI 回傳的數字暗號並顯示照片
+                    match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
+                    if match:
+                        st.markdown("### 🏆 AI 嚴選最佳照片")
+                        st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
+                        
+                        raw_indices = match.group(1).split(',')
+                        selected_files = []
+                        for idx_str in raw_indices:
+                            idx_str = idx_str.strip()
+                            if idx_str.isdigit():
+                                idx = int(idx_str) - 1
+                                if 0 <= idx < len(uploaded_files):
+                                    selected_files.append(uploaded_files[idx])
+                        
+                        if selected_files:
+                            img_cols = st.columns(2)
+                            for idx, s_file in enumerate(selected_files):
+                                img_cols[idx % 2].image(s_file, use_container_width=True, caption=f"精選第 {idx+1} 張")
+                        else:
+                            st.warning("系統收到挑選名單，但無法正確解析圖片，請參考下方文字建議。")
+                    
+                    clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
+                    st.markdown("### 📊 文案與詳細建議")
+                    st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
+
+                # --- 模式 2：單一影片處理邏輯 ---
+                else:
+                    # 將 Streamlit 的上傳檔案轉存為暫存檔，讓 Gemini API 能讀取影片
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
+                        tfile.write(uploaded_video.read())
+                        temp_video_path = tfile.name
+
+                    # 透過 Gemini API 上傳並處理影片
+                    video_file_ai = genai.upload_file(path=temp_video_path)
+                    
+                    prompt_text = f"""
+                    你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
+                    請觀看並深度分析這段活動影片，並依據以下設定為雙平台（IG Reels / FB 影片）撰寫吸睛的文案：
+
+                    【核心設定】
+                    - 關鍵字：{keywords}
+                    - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
+                    - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
+
+                    【任務要求】
+                    1. 幫影片想 3 個吸睛的「短影音標題（大標）」。
+                    2. 撰寫【IG 貼文文案】，必須符合 {text_length} 限制，帶有豐富的表情符號，並加上 #小鳥幼兒園 等相關社群標籤。
+                    3. 撰寫【FB 貼文文案】，必須符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，並且必須比照 IG，在結尾同步加上一模一樣的社群 Hashtag（需含 #小鳥幼兒園）。
+                    4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
+                    """
+
+                    response = model.generate_content([prompt_text, video_file_ai])
+                    response_text = response.text
+                    
+                    # 刪除本機暫存檔
+                    os.remove(temp_video_path)
+                    
+                    st.success("🎉 影片短影音文案已順利產出！")
+                    st.markdown("### 📊 影片文案與標題建議")
+                    st.text_area("您可以直接複製以下全部內容", value=response_text, height=400)
 
             except Exception as e:
                 st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：若持續報錯，請確認您的 API 金鑰是否正確。")
