@@ -12,7 +12,7 @@ if os.path.exists("logo.png"):
 else:
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
-# --- 標題與 Logo 區 (網頁級 Flexbox 雙排版優化) ---
+# --- 標題與 Logo 區 ---
 if os.path.exists("logo.png"):
     try:
         with open("logo.png", "rb") as f:
@@ -64,7 +64,7 @@ if uploaded_files:
     st.info(f"已成功接收 {len(uploaded_files)} 張照片！")
     cols = st.columns(min(len(uploaded_files), 5))
     for i, file in enumerate(uploaded_files[:5]):
-        cols[i].image(file, use_container_width=True, caption=file.name)
+        cols[i].image(file, use_container_width=True, caption=f"第 {i+1} 張照片")
     if len(uploaded_files) > 5:
         st.write(f"...等共 {len(uploaded_files)} 張")
 
@@ -80,25 +80,24 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
             try:
                 genai.configure(api_key=api_key)
                 
-                # --- 核心修正：自動偵測可用模型，徹底解決 404 找不到名字的問題 ---
+                # 自動偵測可用模型
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 target_model = None
-                
-                # 按照優先順序尋找您的金鑰真正支援的模型名稱
-                for m in ["models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-1.5-pro-latest", "models/gemini-1.5-pro", "models/gemini-pro-vision"]:
+                for m in ["models/gemini-2.5-flash", "models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-1.5-pro"]:
                     if m in available_models:
                         target_model = m
                         break
-                        
-                # 如果都找不到，就抓取清單中第一個可用的
                 if not target_model:
-                    target_model = available_models[0] if available_models else "models/gemini-1.5-flash-latest"
+                    target_model = available_models[0] if available_models else "models/gemini-1.5-flash"
 
                 model = genai.GenerativeModel(target_model) 
-                # -------------------------------------------------------------
 
+                # 更改 Prompt 指令：強制 AI 用「數字數字」來回傳
                 prompt_text = f"""
-                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。請分析隨附的 {len(uploaded_files)} 張照片，並依據以下設定完成任務：
+                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
+                我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張為 1，第二張為 2，依此類推）。
+                
+                請分析這些照片，並依據以下設定完成任務：
 
                 【核心設定】
                 - 關鍵字：{keywords}
@@ -106,9 +105,9 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
 
                 【任務 1：IG 智能挑圖與排序】
-                目前共 {len(uploaded_files)} 張照片。請挑選出最適合發佈的 <=10 張照片。
-                你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的檔案名稱（以半形逗號分隔，不要加其他字）：
-                [SELECTED_IMAGES]檔名1.jpg,檔名2.png[/SELECTED_IMAGES]
+                請從這 {len(uploaded_files)} 張照片中，挑選出最適合發佈的 <=10 張照片。
+                你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字或英文字母）：
+                [SELECTED_IMAGES]1,3,5,6[/SELECTED_IMAGES]
 
                 【任務 2：撰寫雙平台文案】
                 === IG 挑圖建議 ===
@@ -123,25 +122,32 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 response = model.generate_content([prompt_text] + image_parts)
                 response_text = response.text
                 
-                st.success(f"🎉 產出成功！（系統本次自動為您匹配的模型為：{target_model}）")
+                st.success("🎉 產出成功！")
                 
-                # 解析 AI 暗號並展示精選照片
+                # 解析 AI 回傳的數字暗號
                 match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
                 
                 if match:
                     st.markdown("### 🏆 AI 嚴選最佳照片")
                     st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
                     
-                    raw_filenames = match.group(1).split(',')
-                    selected_filenames = [name.strip() for name in raw_filenames]
-                    selected_files = [f for f in uploaded_files if f.name in selected_filenames]
+                    raw_indices = match.group(1).split(',')
+                    selected_files = []
+                    
+                    # 根據數字把原圖撈出來
+                    for idx_str in raw_indices:
+                        idx_str = idx_str.strip()
+                        if idx_str.isdigit():
+                            idx = int(idx_str) - 1 # 換算成 Python 索引
+                            if 0 <= idx < len(uploaded_files):
+                                selected_files.append(uploaded_files[idx])
                     
                     if selected_files:
                         img_cols = st.columns(2)
                         for idx, s_file in enumerate(selected_files):
-                            img_cols[idx % 2].image(s_file, use_container_width=True)
+                            img_cols[idx % 2].image(s_file, use_container_width=True, caption=f"精選第 {idx+1} 張")
                     else:
-                        st.warning("系統有收到 AI 的挑選名單，但找不到對應的檔案，請直接參考下方文字建議。")
+                        st.warning("系統收到挑選名單，但無法正確解析圖片，請參考下方文字建議。")
                 
                 clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
                 
