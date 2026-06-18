@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import os
+import base64
 
 # --- 頁面設定 (瀏覽器分頁圖示) ---
 if os.path.exists("logo.png"):
@@ -10,15 +11,23 @@ if os.path.exists("logo.png"):
 else:
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
-# --- 標題與 Logo 區 (左右並排美化版) ---
+# --- 標題與 Logo 區 (網頁級 Flexbox 雙排版優化) ---
 if os.path.exists("logo.png"):
-    # 建立兩欄：左邊放 Logo，右邊放系統標題
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        st.image("logo.png", use_container_width=True)
-    with col_title:
-        # 使用 HTML 語法讓標題文字稍微向下對齊，與圓形 Logo 完美並排
-        st.markdown("<h2 style='margin-top: 25px; font-weight: bold;'>小鳥幼兒園專屬：AI 社群發文系統</h2>", unsafe_allow_html=True)
+    try:
+        # 將圖片轉換為網頁編碼，以達到手機/電腦絕對不變形的完美並排效果
+        with open("logo.png", "rb") as f:
+            encoded_img = base64.b64encode(f.read()).decode()
+        
+        # 核心網頁排版：強迫並排、限制 Logo 大小、防止縮放變形
+        header_html = f"""
+        <div style="display: flex; align-items: center; gap: 15px; margin-top: 10px; margin-bottom: 20px;">
+            <img src="data:image/png;base64,{encoded_img}" style="width: 60px; height: 60px; object-fit: contain; flex-shrink: 0;">
+            <h2 style="margin: 0; font-weight: bold; line-height: 1.3; font-size: 22px;">小鳥幼兒園專屬：AI 社群發文系統</h2>
+        </div>
+        """
+        st.markdown(header_html, unsafe_allow_html=True)
+    except Exception:
+        st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 else:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 
@@ -44,7 +53,7 @@ with col1:
 
 with col2:
     tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"])
-    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
+    edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專专力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
     cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
 
 # --- 照片上傳區 ---
@@ -70,10 +79,7 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
     else:
         with st.spinner("系統正在深度分析照片並撰寫精美文案中，請稍候..."):
             try:
-                # 核心修正：配置 API 金鑰
                 genai.configure(api_key=api_key)
-                
-                # 核心修正：直接指定最穩定、支援圖片分析的標準模型，解決 404 錯誤
                 model = genai.GenerativeModel('gemini-1.5-flash') 
 
                 prompt_text = f"""
@@ -98,10 +104,7 @@ if st.button("✨ 步驟 4：一鍵分析照片並產出貼文", use_container_w
                 (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，不需 Hashtag)
                 """
 
-                # 讀取所有上傳的照片檔案
                 image_parts = [Image.open(file) for file in uploaded_files]
-                
-                # 呼叫 AI 送出請求
                 response = model.generate_content([prompt_text] + image_parts)
                 
                 st.success("🎉 文案與挑圖建議皆已順利產出！")
