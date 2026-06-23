@@ -185,21 +185,20 @@ if generate_btn:
             try:
                 genai.configure(api_key=api_key)
                 
-                # 自動偵測可用模型
-                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                
-                # 建立備份模型嘗試清單，如果第一個 2.5-flash 額度用完了，會依序往下走，避免 429 慘劇
-                model_candidates = [
-                    "models/gemini-2.5-flash", 
-                    "models/gemini-1.5-flash-latest", 
-                    "models/gemini-1.5-flash", 
-                    "models/gemini-1.5-pro",
-                    "models/gemini-1.5-pro-latest"
-                ]
-                
-                target_models = [m for m in model_candidates if m in available_models]
-                if not target_models:
-                    target_models = [available_models[0]] if available_models else ["models/gemini-1.5-flash"]
+                           # 自動偵測可用模型
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            # 更新為最新的 Gemini 3.5 Flash 作為首選
+            model_candidates = [
+                "models/gemini-3.5-flash", 
+                "models/gemini-3.1-pro",
+                "models/gemini-3.1-flash-lite"
+            ]
+            
+            target_models = [m for m in model_candidates if m in available_models]
+            if not target_models:
+                # 如果上述清單都找不到，則嘗試抓取系統目前最新的預設模型
+                target_models = [available_models[0]] if available_models else ["models/gemini-3.5-flash"]
 
                 # 準備 prompt 指令
                 if "多張活動照片" in upload_mode:
