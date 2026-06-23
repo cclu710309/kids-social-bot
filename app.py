@@ -5,8 +5,10 @@ import os
 import base64
 import re
 import tempfile
+import time
+from google.api_core import exceptions
 
-# --- 🛠️ 影像處理核心：防裁切模糊填補 ---
+# --- 🛠️ 影像處理核心：防裁切模糊填補 (原封不動) ---
 def add_blur_padding(img, target_ratio=4/5):
     """
     將照片填補為目標比例 (預設 4:5)，使用原圖模糊作為背景
@@ -86,10 +88,8 @@ col1, col2 = st.columns(2)
 
 with col1:
     keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...", key=f"keywords_{st.session_state.reset_counter}")
-    # ✨ 這裡替換了新的貼文類型
     post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "主題教學", "藝術活動", "幼兒科學", "體能/戶外", "園所公告"], horizontal=True, key=f"post_type_{st.session_state.reset_counter}")
     perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True, key=f"perspective_{st.session_state.reset_counter}")
-    # ✨ 這裡替換了新的長度與新推薦模式
     text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "微故事 (輕量精簡版)", "情境對話 (還原現場童言童語)"], horizontal=True, key=f"text_length_{st.session_state.reset_counter}")
 
 with col2:
@@ -149,18 +149,23 @@ if generate_btn:
             try:
                 genai.configure(api_key=api_key)
                 
+                # 自動偵測可用模型
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = None
-                for m in ["models/gemini-2.5-flash", "models/gemini-1.5-flash-latest", "models/gemini-1.5-flash", "models/gemini-1.5-pro"]:
-                    if m in available_models:
-                        target_model = m
-                        break
-                if not target_model:
-                    target_model = available_models[0] if available_models else "models/gemini-1.5-flash"
+                
+                # 建立備份模型嘗試清單，如果第一個 2.5-flash 額度用完了，會依序往下走，避免 429 慘劇
+                model_candidates = [
+                    "models/gemini-2.5-flash", 
+                    "models/gemini-1.5-flash-latest", 
+                    "models/gemini-1.5-flash", 
+                    "models/gemini-1.5-pro",
+                    "models/gemini-1.5-pro-latest"
+                ]
+                
+                target_models = [m for m in model_candidates if m in available_models]
+                if not target_models:
+                    target_models = [available_models[0]] if available_models else ["models/gemini-1.5-flash"]
 
-                model = genai.GenerativeModel(target_model) 
-
-                # --- 模式 1：多張照片處理邏輯 ---
+                # 準備 prompt 指令
                 if "多張活動照片" in upload_mode:
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -198,49 +203,7 @@ if generate_btn:
                     === FB 貼文 ===
                     (符合設定長度限制，結尾帶入設定的互動目標。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
                     """
-
-                    image_parts = [Image.open(file) for file in uploaded_files]
-                    response = model.generate_content([prompt_text] + image_parts)
-                    response_text = response.text
-                    
-                    st.success("🎉 照片文案與挑選皆已順利產出！")
-                    
-                    match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
-                    if match:
-                        st.markdown("### 🏆 AI 嚴選最佳照片")
-                        st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
-                        
-                        raw_indices = match.group(1).split(',')
-                        selected_files = []
-                        for idx_str in raw_indices:
-                            idx_str = idx_str.strip()
-                            if idx_str.isdigit():
-                                idx = int(idx_str) - 1
-                                if 0 <= idx < len(uploaded_files):
-                                    selected_files.append(uploaded_files[idx])
-                        
-                        if selected_files:
-                            img_cols = st.columns(2)
-                            for idx, s_file in enumerate(selected_files):
-                                original_img = Image.open(s_file)
-                                
-                                # 執行防裁切處理
-                                if enable_blur:
-                                    final_img = add_blur_padding(original_img)
-                                    caption_text = f"精選第 {idx+1} 張 (已防裁切處理)"
-                                else:
-                                    final_img = original_img
-                                    caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
-
-                                img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
-                        else:
-                            st.warning("系統收到挑選名單，但無法正確解析圖片，請參考下方文字建議。")
-                    
-                    clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
-                    st.markdown("### 📊 文案與詳細建議")
-                    st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
-
-                # --- 模式 2：單一影片處理邏輯 ---
+                    contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
                 else:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
                         tfile.write(uploaded_video.read())
@@ -272,15 +235,84 @@ if generate_btn:
                     3. 撰寫【FB 貼文文案】，必須符合上述設定長度限制，結尾帶入設定的互動目標，並且必須比照 IG，在結尾同步加上一模一樣的社群 Hashtag（需含 #小鳥幼兒園）。
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
+                    contents = [prompt_text, video_file_ai]
 
-                    response = model.generate_content([prompt_text, video_file_ai])
-                    response_text = response.text
+                # --- 🚀 多階層重試與備份模型執行邏輯 ---
+                response_text = None
+                success_model = None
+                
+                for attempt_model in target_models:
+                    model = genai.GenerativeModel(attempt_model)
+                    retries = 3
+                    backoff = 2
                     
+                    for r in range(retries):
+                        try:
+                            response = model.generate_content(contents)
+                            response_text = response.text
+                            success_model = attempt_model
+                            break # 成功則跳出重試迴圈
+                        except exceptions.ResourceExhausted as re_err:
+                            # 429 額度超限
+                            if r == retries - 1:
+                                # 如果是當前模型最後一次重試失敗，準備降級到下一個模型
+                                break
+                            time.sleep(backoff)
+                            backoff *= 2 # 指數級等待
+                        except Exception as e:
+                            # 其它未知錯誤直接往外丟，不重試
+                            raise e
+                    
+                    if response_text:
+                        break # 已成功取得文案，跳出模型嘗試清單
+                
+                # 如果所有模型都嘗試失敗，則拋出原本的 429 或其他錯誤
+                if not response_text:
+                    raise exceptions.ResourceExhausted("所有可用模型皆已超出今日免費限制，請稍候重試或更換 API Key。")
+
+                # 刪除影片暫存 (如果有的話)
+                if "單一活動影片" in upload_mode and 'temp_video_path' in locals():
                     os.remove(temp_video_path)
+
+                # --- 渲染產出結果 (維持先前完美設定) ---
+                st.success(f"🎉 文案與挑選皆已順利產出！ (本次為您調度的運算模型為: {success_model})")
+                
+                if "多張活動照片" in upload_mode:
+                    match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
+                    if match:
+                        st.markdown("### 🏆 AI 嚴選最佳照片")
+                        st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」**，就能立刻存進手機相簿直接發文囉！")
+                        
+                        raw_indices = match.group(1).split(',')
+                        selected_files = []
+                        for idx_str in raw_indices:
+                            idx_str = idx_str.strip()
+                            if idx_str.isdigit():
+                                idx = int(idx_str) - 1
+                                if 0 <= idx < len(uploaded_files):
+                                    selected_files.append(uploaded_files[idx])
+                        
+                        if selected_files:
+                            img_cols = st.columns(2)
+                            for idx, s_file in enumerate(selected_files):
+                                original_img = Image.open(s_file)
+                                if enable_blur:
+                                    final_img = add_blur_padding(original_img)
+                                    caption_text = f"精選第 {idx+1} 張 (已防裁切處理)"
+                                else:
+                                    final_img = original_img
+                                    caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
+
+                                img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
+                        else:
+                            st.warning("系統收到挑選名單，但無法正確解析圖片，請參考下方文字建議。")
                     
-                    st.success("🎉 影片短影音文案已順利產出！")
+                    clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
+                    st.markdown("### 📊 文案與詳細建議")
+                    st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
+                else:
                     st.markdown("### 📊 影片文案與標題建議")
                     st.text_area("您可以直接複製以下全部內容", value=response_text, height=400)
 
             except Exception as e:
-                st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：若持續報錯，請確認您的 API 金鑰是否正確。")
+                st.error(f"系統偵測到錯誤：{e}\n\n💡 提示：若持續報錯，請確認您的 API 金鑰是否正確，或更換金鑰重新試試看。")
