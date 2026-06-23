@@ -86,9 +86,11 @@ col1, col2 = st.columns(2)
 
 with col1:
     keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...", key=f"keywords_{st.session_state.reset_counter}")
-    post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "體能/戶外", "園所公告"], horizontal=True, key=f"post_type_{st.session_state.reset_counter}")
+    # ✨ 這裡替換了新的貼文類型
+    post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "主題教學", "藝術活動", "幼兒科學", "體能/戶外", "園所公告"], horizontal=True, key=f"post_type_{st.session_state.reset_counter}")
     perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True, key=f"perspective_{st.session_state.reset_counter}")
-    text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "單詞標籤 (僅詞彙堆疊)", "微故事 (簡短敘述)"], horizontal=True, key=f"text_length_{st.session_state.reset_counter}")
+    # ✨ 這裡替換了新的長度與新推薦模式
+    text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "微故事 (輕量精簡版)", "情境對話 (還原現場童言童語)"], horizontal=True, key=f"text_length_{st.session_state.reset_counter}")
 
 with col2:
     tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"], key=f"tone_{st.session_state.reset_counter}")
@@ -160,7 +162,6 @@ if generate_btn:
 
                 # --- 模式 1：多張照片處理邏輯 ---
                 if "多張活動照片" in upload_mode:
-                    # ⚠️ 已完全恢復上一版最完整、精心設計的 Prompt 原則！
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
                     我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張序號為 1，第二張為 2，依此類推）。
@@ -169,8 +170,17 @@ if generate_btn:
 
                     【核心設定】
                     - 關鍵字：{keywords}
-                    - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
-                    - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
+                    - 類型：{post_type}
+                    - 敘事視角：{perspective}
+                    - 語氣：{', '.join(tone)}
+                    - 教育價值：{', '.join(edu)}
+                    - 互動目標：{', '.join(cta)}
+
+                    【📝 文案長度與風格嚴格限制】
+                    目前的長度設定為：「{text_length}」。請你「務必」遵守以下對應的排版與字數規則：
+                    - 如果是「一句話入魂」：字數極少，用最震撼或最溫馨的一兩句話帶出重點即可，總字數不超過 50 字。
+                    - 如果是「微故事 (輕量精簡版)」：絕對不可以長篇大論！內容必須非常精簡，最多拆成 2 到 3 個極短段落，總字數嚴格控制在 100~150 字以內，直接說出畫面重點。
+                    - 如果是「情境對話」：直接以引號重現現場對話（例如：👦孩子說：「...」 👩老師：「...」），用生動的對話帶出活動亮點，字數同樣控制在 150 字以內。
 
                     【任務 1：IG 智能挑圖 - 必須挑滿 10 張且嚴格篩選多樣性】
                     1. 如果上傳總數大於或等於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
@@ -184,9 +194,9 @@ if generate_btn:
                     === IG 挑圖建議 ===
                     (簡述為什麼精選這 10 張，描述你如何挑選不同人物與不同視角的畫面，以及建議的順序)
                     === IG 貼文 ===
-                    (符合 {text_length} 限制的文案，含 #小鳥幼兒園 等相關社群標籤)
+                    (符合設定長度限制的文案，含 #小鳥幼兒園 等相關社群標籤)
                     === FB 貼文 ===
-                    (符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
+                    (符合設定長度限制，結尾帶入設定的互動目標。請比照 IG 貼文，在 FB 文案結尾同步加上一模一樣的社群 Hashtag 標籤，必須包含 #小鳥幼兒園)
                     """
 
                     image_parts = [Image.open(file) for file in uploaded_files]
@@ -238,20 +248,28 @@ if generate_btn:
 
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
-                    # ⚠️ 影片的 Prompt 也一併恢復最完整原則
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
                     請觀看並深度分析這段活動影片，並依據以下設定為雙平台（IG Reels / FB 影片）撰寫吸睛的文案：
 
                     【核心設定】
                     - 關鍵字：{keywords}
-                    - 類型：{post_type} / 視角：{perspective} / 長度：{text_length}
-                    - 語氣：{', '.join(tone)} / 教育價值：{', '.join(edu)} / 互動目標：{', '.join(cta)}
+                    - 類型：{post_type}
+                    - 敘事視角：{perspective}
+                    - 語氣：{', '.join(tone)}
+                    - 教育價值：{', '.join(edu)}
+                    - 互動目標：{', '.join(cta)}
+
+                    【📝 文案長度與風格嚴格限制】
+                    目前的長度設定為：「{text_length}」。請你「務必」遵守以下對應的排版與字數規則：
+                    - 如果是「一句話入魂」：字數極少，用最震撼或最溫馨的一兩句話帶出重點即可，總字數不超過 50 字。
+                    - 如果是「微故事 (輕量精簡版)」：絕對不可以長篇大論！內容必須非常精簡，最多拆成 2 到 3 個極短段落，總字數嚴格控制在 100~150 字以內，直接說出畫面重點。
+                    - 如果是「情境對話」：直接以引號重現現場對話（例如：👦孩子說：「...」 👩老師：「...」），用生動的對話帶出影片亮點，字數同樣控制在 150 字以內。
 
                     【任務要求】
                     1. 幫影片想 3 個吸睛的「短影音標題（大標）」。
-                    2. 撰寫【IG 貼文文案】，必須符合 {text_length} 限制，帶有豐富的表情符號，並加上 #小鳥幼兒園 等相關社群標籤。
-                    3. 撰寫【FB 貼文文案】，必須符合 {text_length} 限制，結尾帶入 {', '.join(cta)} 的互動，並且必須比照 IG，在結尾同步加上一模一樣的社群 Hashtag（需含 #小鳥幼兒園）。
+                    2. 撰寫【IG 貼文文案】，必須符合上述設定長度限制，帶有豐富的表情符號，並加上 #小鳥幼兒園 等相關社群標籤。
+                    3. 撰寫【FB 貼文文案】，必須符合上述設定長度限制，結尾帶入設定的互動目標，並且必須比照 IG，在結尾同步加上一模一樣的社群 Hashtag（需含 #小鳥幼兒園）。
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
 
