@@ -126,8 +126,11 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟 強制蓋掉底層可能被污染的環境變數
+                # 🌟【終極防禦】直接改寫環境變數，並重新初始化 SDK。
+                # 這是最純粹的寫法，確保不論哪一個版本的 genai.upload_file()
+                # 執行時都能 100% 抓到您輸入的正確付費金鑰（AIzaSy...）
                 os.environ["GEMINI_API_KEY"] = api_key
+                os.environ["API_KEY"] = api_key
                 genai.configure(api_key=api_key)
                 
                 # 自動偵測可用模型
@@ -179,16 +182,12 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟【終極正解】建立獨立的模型通道，不調用 genai 全域上傳，從源頭阻絕環境變數幽靈金鑰
-                    target_model_name = target_models[0].replace("models/", "")
-                    model_instance = genai.GenerativeModel(model_name=target_model_name)
-                    
-                    # 強制在最底層 API 呼叫階段硬塞正確金鑰
-                    video_file_ai = genai.upload_file(path=temp_video_path, client=model_instance, api_key=api_key)
+                    # 🌟 採用最純粹乾淨、完全沒有自訂參數的標準寫法（因為環境變數已經被上面洗成正確的付費 Key）
+                    video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
                         time.sleep(2)
-                        video_file_ai = genai.get_file(name=video_file_ai.name, client=model_instance, api_key=api_key)
+                        video_file_ai = genai.get_file(name=video_file_ai.name)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -217,8 +216,7 @@ if generate_btn:
                     retries = 2
                     for r in range(retries):
                         try:
-                            # 🌟 生成內容時也強制掛載正確金鑰
-                            response = model.generate_content(contents, request_options={"api_key": api_key})
+                            response = model.generate_content(contents)
                             response_text = response.text
                             success_model = attempt_model
                             break
