@@ -89,7 +89,7 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
-target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-1.5-flash-001", "gemini-3.5-pro"], key=f"model_select_{st.session_state.reset_counter}")
+target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"], key=f"model_select_{st.session_state.reset_counter}")
 upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (無上限上傳，AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True, key=f"upload_mode_{st.session_state.reset_counter}")
 
 uploaded_files = None
@@ -276,9 +276,9 @@ if generate_btn:
                                     break
                         except urllib.error.HTTPError as e:
                             if e.code == 503:
-                                if "3.5" in target_model:
-                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-1.5-flash-001 並重試...")
-                                    target_model = "gemini-1.5-flash-001"
+                                if "gemini-1.5-flash" != target_model:
+                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-1.5-flash 並重試...")
+                                    target_model = "gemini-1.5-flash"
                                     time.sleep(2)
                                     continue
                                 elif attempt < max_retries - 1:
