@@ -128,7 +128,7 @@ if generate_btn:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
                 # 🌟 2026 官方最推薦、完全適配付費版 Prepay 的最新商業型模型
-                target_model = "gemini-1.5-flash"
+                target_model = "gemini-1.5-flash-002"
                 
                 if "多張活動照片" in upload_mode:
                     genai.configure(api_key=api_key)
