@@ -8,7 +8,9 @@ import tempfile
 import time
 from google.api_core import exceptions
 
-# 隱私保險箱自動載入
+# =========================================================================
+# 🔑 安全機制：Streamlit 隱私保險箱自動載入區
+# =========================================================================
 EMBEDDED_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
 # --- 🛠️ 影像處理核心：防裁切模糊填補 ---
@@ -126,17 +128,17 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟 配置金鑰
+                # 配置金鑰
                 genai.configure(api_key=api_key)
                 
-                # 直接鎖定最穩定的 1.5-flash 模型，避免名稱切換干擾
-                target_model = "models/gemini-1.5-flash"
+                # 🌟【路徑升級修正】採用官方目前最穩定、相容多模態影片分析的最新模型路徑
+                target_model = "models/gemini-1.5-flash-latest"
                 model = genai.GenerativeModel(target_model)
                 
                 if "多張活動照片" in upload_mode:
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                    我目前總共上傳了 {len(uploaded_files)} 張照片。
+                    我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
                     
                     【核心設定】
                     - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
@@ -149,7 +151,8 @@ if generate_btn:
 
                     【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
                     1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
-                    2. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
+                    2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
+                    3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
                     [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                     【任務 2：撰寫雙平台文案】
@@ -164,7 +167,7 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 乾淨上傳影片
+                    # 上傳影片
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
