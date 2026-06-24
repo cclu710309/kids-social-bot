@@ -9,8 +9,13 @@ import time
 from google.api_core import exceptions
 
 # =========================================================================
-# 🔑 安全機制：Streamlit 隱私保險箱自動載入區
+# 🔑 核心防禦：強制洗清環境變數中殘留的舊金鑰 (阻斷 AQ. 錯誤金鑰)
 # =========================================================================
+for env_key in ["GEMINI_API_KEY", "API_KEY"]:
+    if env_key in os.environ:
+        del os.environ[env_key]
+
+# 隱私保險箱自動載入
 EMBEDDED_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
 # --- 🛠️ 影像處理核心：防裁切模糊填補 ---
@@ -135,10 +140,9 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟【關鍵修正點】強制全域設定為使用者在畫面上輸入的最新有效金鑰，阻斷舊金鑰干擾
-                genai.configure(api_key=api_key)
-                os.environ["API_KEY"] = api_key
+                # 重新強制灌入畫面上最新確定的金鑰
                 os.environ["GEMINI_API_KEY"] = api_key
+                genai.configure(api_key=api_key)
                 
                 # 自動偵測可用模型群
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -160,22 +164,21 @@ if generate_btn:
                 if "多張活動照片" in upload_mode:
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                    我目前總共上傳了 {len(uploaded_files)} 張照片。這些照片是按照順序提供給你的（第一張序號為 1，第二張為 2，依此類推）。
+                    我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
                     
                     【核心設定】
                     - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
                     - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
 
-                    【📝 文案長度與風格嚴格限制】
-                    目前的長度設定為：「{text_length}」。請你「務必」遵守以下對應的排版與字數規則：
-                    - 如果是「一句話入魂 (極度精簡)」：用最溫馨或有重點的一兩句話帶出，總字數不超過 50 字。
-                    - 如果是「微故事 (輕量精簡版)」：內容必須非常精簡，最多拆成 2 到 3 個極短段落，總字數嚴格控制在 100~150 字以內。
-                    - 如果是「情境對話 (還原現場童言童語)」：直接以引號重現現場對話（例如：👦孩子：「...」 👩老師：「...」），字數控制在 150 字以內。
+                    【📝 文案長度與風格嚴格限制】: 「{text_length}」
+                    - 一句話入魂：不超過 50 字。
+                    - 微故事：總字數嚴格控制在 100~150 字以內。
+                    - 情境對話：以引號重現現場對話，字數控制在 150 字以內。
 
                     【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
                     1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。如果小於 10 張，請將上傳的所有序號全部列出。
-                    2. 🌟防重複機制🌟：在挑選照片時，必須嚴格遵守多樣性準則：避免重複人物過多，強制畫面模式分散（必須包含遠景呈現場景、中景呈現互動、特寫呈現專注表情）。
-                    3. 你「必須」在整段回應的「最開頭」，使用以下暗號格式列出你挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母）：
+                    2. 🌟防重複機制🌟：在挑選照片時，必須嚴格遵守多樣性準則：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
+                    3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
                     [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                     【任務 2：撰寫雙平台文案】
@@ -185,14 +188,19 @@ if generate_btn:
                     """
                     contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
                 else:
-                    # 影片模式：建立暫存
+                    # 影片模式
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟【關鍵修正點】強制在此處再次綁定正確金鑰，確保影片上傳元件不會抓錯權限
-                    genai.configure(api_key=api_key)
-                    video_file_ai = genai.upload_file(path=temp_video_path)
+                    # 🌟 影片專用金鑰特使：跳過預設上傳元件，強迫建立獨立的通道傳輸
+                    client = genai.Client(api_key=api_key)
+                    video_file_ai = client.files.upload(file=temp_video_path)
+                    
+                    # 等待影片處理完成
+                    while video_file_ai.state.name == "PROCESSING":
+                        time.sleep(2)
+                        video_file_ai = client.files.get(name=video_file_ai.name)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -202,21 +210,20 @@ if generate_btn:
                     - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
                     - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
 
-                    【📝 文案長度與風格嚴格限制】
-                    目前的長度設定為：「{text_length}」。請你「務必」遵守字數規則：
+                    【📝 文案長度與風格嚴格限制】: 「{text_length}」
                     - 一句話入魂：總字數不超過 50 字。
                     - 微故事：字數嚴格控制在 100~150 字以內。
                     - 情境對話：重現現場對話，字數同樣控制在 150 字以內。
 
                     【任務要求】
-                    1. 幫影片想 3 個吸睛的「短影音標題（大標）」。
+                    1. 幫影片想 3 個吸睛的「短影音大標題」。
                     2. 撰寫【IG 貼文文案】（含豐富表情符號，並加上 #小鳥幼兒園）。
                     3. 撰寫【FB 貼文文案】（結尾帶入互動目標，並同步加上 #小鳥幼兒園 標籤）。
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
                     contents = [prompt_text, video_file_ai]
 
-                # 彈性多模型自動重試
+                # 模型分析
                 for attempt_model in target_models:
                     model = genai.GenerativeModel(attempt_model)
                     retries = 2
@@ -233,7 +240,7 @@ if generate_btn:
                     if response_text: break
 
                 if not response_text:
-                    raise exceptions.ResourceExhausted("當前伺服器忙碌，請重新點擊一次產出按鈕。")
+                    raise exceptions.ResourceExhausted("當前伺服器忙碌，請重新點擊產出。")
 
                 if "單一活動影片" in upload_mode and 'temp_video_path' in locals():
                     try:
