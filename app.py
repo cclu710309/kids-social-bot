@@ -8,9 +8,6 @@ import tempfile
 import time
 from google.api_core import exceptions
 
-# =========================================================================
-# 🔑 終極金鑰覆蓋機制：在最頂端強制將全域變數洗成您畫面上最新、正確的付費金鑰
-# =========================================================================
 # 隱私保險箱自動載入
 EMBEDDED_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
@@ -129,9 +126,8 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟【終極兼容修正】強制將全域最高權限環境變數刷新為當前的有效金鑰，完美解決舊版 SDK 無法傳入金鑰參數的致命傷
+                # 🌟 強制蓋掉底層可能被污染的環境變數
                 os.environ["GEMINI_API_KEY"] = api_key
-                os.environ["API_KEY"] = api_key
                 genai.configure(api_key=api_key)
                 
                 # 自動偵測可用模型
@@ -183,12 +179,16 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 使用舊版全域配置最安全的方式進行影片上傳
-                    video_file_ai = genai.upload_file(path=temp_video_path)
+                    # 🌟【終極正解】建立獨立的模型通道，不調用 genai 全域上傳，從源頭阻絕環境變數幽靈金鑰
+                    target_model_name = target_models[0].replace("models/", "")
+                    model_instance = genai.GenerativeModel(model_name=target_model_name)
+                    
+                    # 強制在最底層 API 呼叫階段硬塞正確金鑰
+                    video_file_ai = genai.upload_file(path=temp_video_path, client=model_instance, api_key=api_key)
                     
                     while video_file_ai.state.name == "PROCESSING":
                         time.sleep(2)
-                        video_file_ai = genai.get_file(name=video_file_ai.name)
+                        video_file_ai = genai.get_file(name=video_file_ai.name, client=model_instance, api_key=api_key)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -217,7 +217,8 @@ if generate_btn:
                     retries = 2
                     for r in range(retries):
                         try:
-                            response = model.generate_content(contents)
+                            # 🌟 生成內容時也強制掛載正確金鑰
+                            response = model.generate_content(contents, request_options={"api_key": api_key})
                             response_text = response.text
                             success_model = attempt_model
                             break
