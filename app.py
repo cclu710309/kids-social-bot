@@ -126,9 +126,9 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟【終極防禦】直接改寫環境變數，並重新初始化 SDK。
-                # 這是最純粹的寫法，確保不論哪一個版本的 genai.upload_file()
-                # 執行時都能 100% 抓到您輸入的正確付費金鑰（AIzaSy...）
+                # 🌟【終極暴力防禦】在上傳發生前的一毫秒，直接用作業系統最高權限
+                # 強制把環境變數改寫為網頁畫面上「正確的付費 Key」
+                # 這可以百分之百杜絕底層 SDK 偷偷去抓舊金鑰（AQ.）的漏洞！
                 os.environ["GEMINI_API_KEY"] = api_key
                 os.environ["API_KEY"] = api_key
                 genai.configure(api_key=api_key)
@@ -182,7 +182,8 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟 採用最純粹乾淨、完全沒有自訂參數的標準寫法（因為環境變數已經被上面洗成正確的付費 Key）
+                    # 🌟 再次強制確保上傳的這一瞬間，環境變數已被強行綁定
+                    os.environ["GEMINI_API_KEY"] = api_key
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
