@@ -9,7 +9,7 @@ import time
 from google.api_core import exceptions
 
 # =========================================================================
-# 🔑 核心防禦：強制洗清環境變數中殘留的舊金鑰 (阻斷 AQ. 錯誤金鑰)
+# 🔑 核心物理阻斷：徹底清除全域與環境變數中的舊金鑰干擾
 # =========================================================================
 for env_key in ["GEMINI_API_KEY", "API_KEY"]:
     if env_key in os.environ:
@@ -23,30 +23,23 @@ def add_blur_padding(img, target_ratio=4/5):
     img = img.convert("RGB")
     img_w, img_h = img.size
     img_ratio = img_w / img_h
-
-    if abs(img_ratio - target_ratio) < 0.01:
-        return img
-
+    if abs(img_ratio - target_ratio) < 0.01: return img
     if img_ratio > target_ratio:
         target_w = img_w
         target_h = int(img_w / target_ratio)
     else:
         target_h = img_h
         target_w = int(img_h * target_ratio)
-
     bg = ImageOps.fit(img, (target_w, target_h), method=Image.Resampling.LANCZOS)
     bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
-    
     offset_x = (target_w - img_w) // 2
     offset_y = (target_h - img_h) // 2
     bg.paste(img, (offset_x, offset_y))
-    
     return bg
 
 # --- 頁面設定 ---
 if os.path.exists("logo.png"):
-    logo_img = Image.open("logo.png")
-    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=logo_img, layout="wide")
+    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=Image.open("logo.png"), layout="wide")
 else:
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
@@ -97,7 +90,7 @@ with col1:
 with col2:
     tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"], key=f"tone_{st.session_state.reset_counter}")
     edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"], key=f"edu_{st.session_state.reset_counter}")
-    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引引导家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
+    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
 
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
@@ -140,16 +133,17 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 重新強制灌入最新的正確金鑰
+                # 🌟 全域與模型完全鎖定
                 genai.configure(api_key=api_key)
                 
-                # 自動偵測可用模型群
+                # 自動偵測可用模型
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 
+                # 影片處理優先使用穩定商業模型，避開實驗性快取
                 model_candidates = [
-                    "models/gemini-2.5-flash", 
                     "models/gemini-1.5-flash-latest",
-                    "models/gemini-1.5-flash", 
+                    "models/gemini-1.5-flash",
+                    "models/gemini-2.5-flash",
                     "models/gemini-1.5-pro"
                 ]
                 
@@ -175,8 +169,8 @@ if generate_btn:
                     - 情境對話：以引號重現現場對話，字數控制在 150 字以內。
 
                     【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
-                    1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。如果小於 10 張，請將上傳的所有序號全部列出。
-                    2. 🌟防重複機制🌟：在挑選照片時，必須嚴格遵守多樣性準則：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
+                    1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
+                    2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
                     3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
                     [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
@@ -192,13 +186,12 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟【語法修正與安全對接】採用與您系統最相容的舊版上傳函式，並強制帶入正確金鑰
-                    video_file_ai = genai.upload_file(path=temp_video_path)
+                    # 🌟【終極物理阻斷】上傳影片時，強制手動在函式內灌入網頁目前的有效金鑰，不再使用全域呼叫
+                    video_file_ai = genai.upload_file(path=temp_video_path, api_key=api_key)
                     
-                    # 等待影片處理完成
                     while video_file_ai.state.name == "PROCESSING":
                         time.sleep(2)
-                        video_file_ai = genai.get_file(name=video_file_ai.name)
+                        video_file_ai = genai.get_file(name=video_file_ai.name, api_key=api_key)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -227,7 +220,8 @@ if generate_btn:
                     retries = 2
                     for r in range(retries):
                         try:
-                            response = model.generate_content(contents)
+                            # 🌟 生成內容時，同樣強制手動掛載正確金鑰
+                            response = model.generate_content(contents, request_options={"api_key": api_key})
                             response_text = response.text
                             success_model = attempt_model
                             break
@@ -241,10 +235,8 @@ if generate_btn:
                     raise exceptions.ResourceExhausted("當前伺服器忙碌，請重新點擊產出。")
 
                 if "單一活動影片" in upload_mode and 'temp_video_path' in locals():
-                    try:
-                        os.remove(temp_video_path)
-                    except:
-                        pass
+                    try: os.remove(temp_video_path)
+                    except: pass
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！ (本次為您調度的運算模型為: {success_model})")
@@ -274,7 +266,6 @@ if generate_btn:
                                 else:
                                     final_img = original_img
                                     caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
-                                
                                 img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
                     
                     clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
