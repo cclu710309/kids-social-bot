@@ -249,10 +249,28 @@ if generate_btn:
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
                     
-                    # 🌟 採用最新一代完全不經由代理、直接與後台直連的生成指令
-                    model = genai.GenerativeModel(model_name=target_model)
-                    response = model.generate_content([prompt_text, video_file_ai])
-                    response_text = response.text
+                    # 🌟 採用最新一代完全不經由代理、直接與後台直連的生成指令 (純 REST，保證不卡死)
+                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
+                    payload = {
+                        "contents": [{
+                            "parts": [
+                                {"text": prompt_text},
+                                {"fileData": {"mimeType": "video/mp4", "fileUri": file_uri}}
+                            ]
+                        }]
+                    }
+                    req_generate = urllib.request.Request(url_generate, method="POST")
+                    req_generate.add_header("Content-Type", "application/json")
+                    
+                    try:
+                        with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=180) as response:
+                            gen_data = json.loads(response.read().decode("utf-8"))
+                            if "candidates" in gen_data and gen_data["candidates"]:
+                                response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
+                            else:
+                                response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
+                    except Exception as e:
+                        raise Exception(f"AI 生成文案時發生錯誤或超時：{e}")
 
                     try: os.remove(temp_video_path)
                     except: pass
