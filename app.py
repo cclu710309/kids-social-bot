@@ -199,15 +199,31 @@ if generate_btn:
 
                     # 等待影片處理完成
                     url_check = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key.strip()}"
+                    
+                    status_text = st.empty()
+                    wait_seconds = 0
+                    
                     while True:
                         req_check = urllib.request.Request(url_check, method="GET")
                         with urllib.request.urlopen(req_check) as response:
                             check_data = json.loads(response.read().decode("utf-8"))
-                            if check_data.get("state") == "ACTIVE":
+                            current_state = check_data.get("state", "UNKNOWN")
+                            
+                            if current_state == "ACTIVE":
+                                status_text.success(f"✅ 影片於 Google 伺服器處理完成！(共等待 {wait_seconds} 秒，開始生成文案...)")
                                 break
-                            elif check_data.get("state") == "FAILED":
+                            elif current_state == "FAILED":
+                                status_text.error("❌ 影片處理失敗，這可能是影片編碼或格式不支援。")
                                 raise Exception("影片處理失敗，請嘗試其他影片。")
+                            else:
+                                status_text.info(f"⏳ Google 伺服器正在逐格分析您的影片... 目前狀態：{current_state} (已等待 {wait_seconds} 秒)")
+                                
                         time.sleep(2)
+                        wait_seconds += 2
+                        
+                        if wait_seconds > 600: # 10分鐘超時強制中斷
+                            status_text.error("❌ 伺服器處理逾時 (超過10分鐘)，系統自動中斷。")
+                            raise Exception("處理逾時，請稍後重試或上傳較短的影片。")
                     
                     # 建立適用於 model.generate_content 的檔案物件
                     import google.ai.generativelanguage as glm
