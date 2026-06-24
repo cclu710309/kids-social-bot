@@ -262,15 +262,31 @@ if generate_btn:
                     req_generate = urllib.request.Request(url_generate, method="POST")
                     req_generate.add_header("Content-Type", "application/json")
                     
-                    try:
-                        with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=180) as response:
-                            gen_data = json.loads(response.read().decode("utf-8"))
-                            if "candidates" in gen_data and gen_data["candidates"]:
-                                response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
+                    import urllib.error
+                    
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=180) as response:
+                                gen_data = json.loads(response.read().decode("utf-8"))
+                                if "candidates" in gen_data and gen_data["candidates"]:
+                                    response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
+                                    break # 成功
+                                else:
+                                    response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
+                                    break
+                        except urllib.error.HTTPError as e:
+                            if e.code == 503 and attempt < max_retries - 1:
+                                # 伺服器忙碌，等待 5 秒後自動重試
+                                time.sleep(5)
+                                continue
                             else:
-                                response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
-                    except Exception as e:
-                        raise Exception(f"AI 生成文案時發生錯誤或超時：{e}")
+                                error_body = e.read().decode("utf-8")
+                                raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
+                        except Exception as e:
+                            raise Exception(f"網路連線錯誤或超時：{e}")
+                    else:
+                        raise Exception("Google 伺服器目前過載 (連續發生 503 錯誤)，請稍後再試。")
 
                     try: os.remove(temp_video_path)
                     except: pass
