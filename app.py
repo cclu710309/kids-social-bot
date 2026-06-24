@@ -9,12 +9,8 @@ import time
 from google.api_core import exceptions
 
 # =========================================================================
-# 🔑 核心物理阻斷：徹底清除全域與環境變數中的舊金鑰干擾
+# 🔑 終極金鑰覆蓋機制：在最頂端強制將全域變數洗成您畫面上最新、正確的付費金鑰
 # =========================================================================
-for env_key in ["GEMINI_API_KEY", "API_KEY"]:
-    if env_key in os.environ:
-        del os.environ[env_key]
-
 # 隱私保險箱自動載入
 EMBEDDED_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
@@ -133,13 +129,14 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟 全域與模型完全鎖定
+                # 🌟【終極兼容修正】強制將全域最高權限環境變數刷新為當前的有效金鑰，完美解決舊版 SDK 無法傳入金鑰參數的致命傷
+                os.environ["GEMINI_API_KEY"] = api_key
+                os.environ["API_KEY"] = api_key
                 genai.configure(api_key=api_key)
                 
                 # 自動偵測可用模型
                 available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 
-                # 影片處理優先使用穩定商業模型，避開實驗性快取
                 model_candidates = [
                     "models/gemini-1.5-flash-latest",
                     "models/gemini-1.5-flash",
@@ -186,12 +183,12 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟【終極物理阻斷】上傳影片時，強制手動在函式內灌入網頁目前的有效金鑰，不再使用全域呼叫
-                    video_file_ai = genai.upload_file(path=temp_video_path, api_key=api_key)
+                    # 使用舊版全域配置最安全的方式進行影片上傳
+                    video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
                         time.sleep(2)
-                        video_file_ai = genai.get_file(name=video_file_ai.name, api_key=api_key)
+                        video_file_ai = genai.get_file(name=video_file_ai.name)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -220,8 +217,7 @@ if generate_btn:
                     retries = 2
                     for r in range(retries):
                         try:
-                            # 🌟 生成內容時，同樣強制手動掛載正確金鑰
-                            response = model.generate_content(contents, request_options={"api_key": api_key})
+                            response = model.generate_content(contents)
                             response_text = response.text
                             success_model = attempt_model
                             break
