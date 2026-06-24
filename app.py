@@ -25,13 +25,16 @@ with col2:
     edu = st.multiselect("💡 教育理念", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"])
     cta = st.multiselect("🎯 互動目標", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"])
 
-uploaded_files = st.file_uploader("請上傳活動照片", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+# 增加影片格式支援
+uploaded_files = st.file_uploader("請上傳活動照片或影片", type=['png', 'jpg', 'jpeg', 'mp4', 'mov'], accept_multiple_files=True)
 enable_blur = st.toggle("✨ 啟用 IG 防裁切模式", value=True)
 
 # --- 執行邏輯 ---
 if st.button("✨ 一鍵分析並產出社群貼文", type="primary"):
     if not api_key:
         st.error("請輸入 API Key")
+    elif len(uploaded_files) > 10:
+        st.error("⚠️ 檔案數量過多：為了確保生成品質，請限制在 10 張照片/影片以內。")
     else:
         with st.spinner("系統正在分析素材並撰寫文案..."):
             try:
@@ -46,8 +49,14 @@ if st.button("✨ 一鍵分析並產出社群貼文", type="primary"):
                 
                 prompt = f"""你是幼兒園小編。關鍵字：{keywords}，類型：{post_type}，視角：{perspective}，語氣：{tone}，長度：{text_length}。請產出 IG 與 FB 文案。"""
                 contents = [prompt]
-                if uploaded_files:
-                    for f in uploaded_files: contents.append(Image.open(f))
+                
+                # 處理上傳檔案
+                for f in uploaded_files:
+                    if f.type.startswith('image'):
+                        contents.append(Image.open(f))
+                    else:
+                        # 簡單處理影片檔案指標
+                        contents.append(f"檔案名稱: {f.name} (影片檔案)")
                 
                 response = model.generate_content(contents)
                 st.success(f"產出成功 (模型: {target_model})")
