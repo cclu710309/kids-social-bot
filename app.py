@@ -126,48 +126,30 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟【終極暴力防禦】在上傳發生前的一毫秒，直接用作業系統最高權限
-                # 強制把環境變數改寫為網頁畫面上「正確的付費 Key」
-                # 這可以百分之百杜絕底層 SDK 偷偷去抓舊金鑰（AQ.）的漏洞！
-                os.environ["GEMINI_API_KEY"] = api_key
-                os.environ["API_KEY"] = api_key
+                # 🌟 配置金鑰
                 genai.configure(api_key=api_key)
                 
-                # 自動偵測可用模型
-                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                
-                model_candidates = [
-                    "models/gemini-1.5-flash-latest",
-                    "models/gemini-1.5-flash",
-                    "models/gemini-2.5-flash",
-                    "models/gemini-1.5-pro"
-                ]
-                
-                target_models = [m for m in model_candidates if m in available_models]
-                if not target_models:
-                    target_models = [available_models[0]] if available_models else ["models/gemini-1.5-flash"]
-                
-                response_text = None
-                success_model = None
+                # 直接鎖定最穩定的 1.5-flash 模型，避免名稱切換干擾
+                target_model = "models/gemini-1.5-flash"
+                model = genai.GenerativeModel(target_model)
                 
                 if "多張活動照片" in upload_mode:
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                    我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
+                    我目前總共上傳了 {len(uploaded_files)} 張照片。
                     
                     【核心設定】
                     - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
                     - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
 
-                    【📝 文案長度與風格嚴格限制】: 「{text_length}」
+                    【文案長度與風格限制】: 「{text_length}」
                     - 一句話入魂：不超過 50 字。
                     - 微故事：總字數嚴格控制在 100~150 字以內。
                     - 情境對話：以引號重現現場對話，字數控制在 150 字以內。
 
                     【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
                     1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
-                    2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
-                    3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
+                    2. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
                     [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                     【任務 2：撰寫雙平台文案】
@@ -182,8 +164,7 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟 再次強制確保上傳的這一瞬間，環境變數已被強行綁定
-                    os.environ["GEMINI_API_KEY"] = api_key
+                    # 乾淨上傳影片
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
@@ -211,31 +192,16 @@ if generate_btn:
                     """
                     contents = [prompt_text, video_file_ai]
 
-                # 模型分析
-                for attempt_model in target_models:
-                    model = genai.GenerativeModel(attempt_model)
-                    retries = 2
-                    for r in range(retries):
-                        try:
-                            response = model.generate_content(contents)
-                            response_text = response.text
-                            success_model = attempt_model
-                            break
-                        except Exception as e:
-                            if "not found" in str(e).lower() or "not valid" in str(e).lower():
-                                break 
-                            raise e
-                    if response_text: break
-
-                if not response_text:
-                    raise exceptions.ResourceExhausted("當前伺服器忙碌，請重新點擊產出。")
+                # 執行生成
+                response = model.generate_content(contents)
+                response_text = response.text
 
                 if "單一活動影片" in upload_mode and 'temp_video_path' in locals():
                     try: os.remove(temp_video_path)
                     except: pass
 
                 # --- 🎨 畫面渲染產出結果 ---
-                st.success(f"🎉 文案與分析皆已順利產出！ (本次為您調度的運算模型為: {success_model})")
+                st.success(f"🎉 文案與分析皆已順利產出！")
                 
                 if "多張活動照片" in upload_mode:
                     match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
