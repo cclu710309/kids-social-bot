@@ -97,7 +97,7 @@ with col1:
 with col2:
     tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"], key=f"tone_{st.session_state.reset_counter}")
     edu = st.multiselect("💡 教育理念 (可複選)", ["生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"], key=f"edu_{st.session_state.reset_counter}")
-    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
+    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引引导家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
 
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
@@ -140,8 +140,7 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 重新強制灌入畫面上最新確定的金鑰
-                os.environ["GEMINI_API_KEY"] = api_key
+                # 重新強制灌入最新的正確金鑰
                 genai.configure(api_key=api_key)
                 
                 # 自動偵測可用模型群
@@ -188,19 +187,18 @@ if generate_btn:
                     """
                     contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
                 else:
-                    # 影片模式
+                    # 影片模式：建立暫存檔案
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟 影片專用金鑰特使：跳過預設上傳元件，強迫建立獨立的通道傳輸
-                    client = genai.Client(api_key=api_key)
-                    video_file_ai = client.files.upload(file=temp_video_path)
+                    # 🌟【語法修正與安全對接】採用與您系統最相容的舊版上傳函式，並強制帶入正確金鑰
+                    video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     # 等待影片處理完成
                     while video_file_ai.state.name == "PROCESSING":
                         time.sleep(2)
-                        video_file_ai = client.files.get(name=video_file_ai.name)
+                        video_file_ai = genai.get_file(name=video_file_ai.name)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
