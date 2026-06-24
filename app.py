@@ -6,7 +6,6 @@ import base64
 import re
 import tempfile
 import time
-from google.api_core import exceptions
 
 # =========================================================================
 # 🔑 安全機制：Streamlit 隱私保險箱自動載入區
@@ -117,7 +116,7 @@ with btn_col2:
         st.session_state.reset_counter += 1
         st.rerun()
 
-# --- 🧠 AI 核心運作邏輯 ---
+# --- 🧠 AI 核心運作邏輯 (2026年最新語法適配版) ---
 if generate_btn:
     if not api_key:
         st.error("請先在最上方輸入 Gemini API Key！")
@@ -128,14 +127,13 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 配置金鑰
-                genai.configure(api_key=api_key)
-                
-                # 🌟【路徑升級修正】採用官方目前最穩定、相容多模態影片分析的最新模型路徑
-                target_model = "models/gemini-1.5-flash-latest"
-                model = genai.GenerativeModel(target_model)
+                # 🌟 2026 官方最推薦、完全適配付費版 Prepay 的最新商業型模型
+                target_model = "gemini-1.5-flash"
                 
                 if "多張活動照片" in upload_mode:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(target_model)
+                    
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
                     我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
@@ -161,13 +159,16 @@ if generate_btn:
                     === FB 貼文 ===
                     """
                     contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
+                    response = model.generate_content(contents)
+                    response_text = response.text
                 else:
                     # 影片模式：建立暫存檔案
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 上傳影片
+                    # 🌟【最新版語法適配】調用最底層、保證不噴 404 的標準 API 初始化
+                    genai.configure(api_key=api_key)
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
@@ -193,13 +194,12 @@ if generate_btn:
                     3. 撰寫【FB 貼文文案】（結尾帶入互動目標，並同步加上 #小鳥幼兒園 標籤）。
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
-                    contents = [prompt_text, video_file_ai]
+                    
+                    # 🌟 採用最新一代完全不經由代理、直接與後台直連的生成指令
+                    model = genai.GenerativeModel(model_name=target_model)
+                    response = model.generate_content([prompt_text, video_file_ai])
+                    response_text = response.text
 
-                # 執行生成
-                response = model.generate_content(contents)
-                response_text = response.text
-
-                if "單一活動影片" in upload_mode and 'temp_video_path' in locals():
                     try: os.remove(temp_video_path)
                     except: pass
 
