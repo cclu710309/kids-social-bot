@@ -89,6 +89,7 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
+target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-1.5-flash-001", "gemini-3.5-pro"], key=f"model_select_{st.session_state.reset_counter}")
 upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (無上限上傳，AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True, key=f"upload_mode_{st.session_state.reset_counter}")
 
 uploaded_files = None
@@ -127,12 +128,10 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                # 🌟 2026 官方最推薦、完全適配付費版 Prepay 的最新商業型模型
-                target_model = "gemini-3.5-flash"
+                target_model = target_model_ui
                 
                 if "多張活動照片" in upload_mode:
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(target_model)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -250,22 +249,22 @@ if generate_btn:
                     """
                     
                     # 🌟 採用最新一代完全不經由代理、直接與後台直連的生成指令 (純 REST，保證不卡死)
-                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
-                    payload = {
-                        "contents": [{
-                            "parts": [
-                                {"text": prompt_text},
-                                {"fileData": {"mimeType": "video/mp4", "fileUri": file_uri}}
-                            ]
-                        }]
-                    }
-                    req_generate = urllib.request.Request(url_generate, method="POST")
-                    req_generate.add_header("Content-Type", "application/json")
-                    
                     import urllib.error
                     
                     max_retries = 3
                     for attempt in range(max_retries):
+                        url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
+                        payload = {
+                            "contents": [{
+                                "parts": [
+                                    {"text": prompt_text},
+                                    {"fileData": {"mimeType": "video/mp4", "fileUri": file_uri}}
+                                ]
+                            }]
+                        }
+                        req_generate = urllib.request.Request(url_generate, method="POST")
+                        req_generate.add_header("Content-Type", "application/json")
+                        
                         try:
                             with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=180) as response:
                                 gen_data = json.loads(response.read().decode("utf-8"))
@@ -276,17 +275,26 @@ if generate_btn:
                                     response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
                                     break
                         except urllib.error.HTTPError as e:
-                            if e.code == 503 and attempt < max_retries - 1:
-                                # 伺服器忙碌，等待 5 秒後自動重試
-                                time.sleep(5)
-                                continue
+                            if e.code == 503:
+                                if "3.5" in target_model:
+                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-1.5-flash-001 並重試...")
+                                    target_model = "gemini-1.5-flash-001"
+                                    time.sleep(2)
+                                    continue
+                                elif attempt < max_retries - 1:
+                                    status_text.warning("⚠️ 伺服器依然忙碌中，等待 5 秒後自動重試...")
+                                    time.sleep(5)
+                                    continue
+                                else:
+                                    error_body = e.read().decode("utf-8")
+                                    raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
                             else:
                                 error_body = e.read().decode("utf-8")
                                 raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
                         except Exception as e:
                             raise Exception(f"網路連線錯誤或超時：{e}")
                     else:
-                        raise Exception("Google 伺服器目前過載 (連續發生 503 錯誤)，請稍後再試。")
+                        raise Exception("Google 伺服器目前過載 (多次 503 錯誤)，請稍後再試。")
 
                     try: os.remove(temp_video_path)
                     except: pass
