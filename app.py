@@ -168,7 +168,7 @@ if generate_btn:
                         temp_video_path = tfile.name
 
                     # 🌟【最新版語法適配】調用最底層、保證不噴 404 的標準 API 初始化
-                    genai.configure(api_key=api_key)
+                    genai.configure(api_key=api_key.strip())
                     video_file_ai = genai.upload_file(path=temp_video_path)
                     
                     while video_file_ai.state.name == "PROCESSING":
