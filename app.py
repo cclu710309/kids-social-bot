@@ -167,13 +167,51 @@ if generate_btn:
                         tfile.write(uploaded_video.read())
                         temp_video_path = tfile.name
 
-                    # 🌟【最新版語法適配】調用最底層、保證不噴 404 的標準 API 初始化
-                    genai.configure(api_key=api_key.strip())
-                    video_file_ai = genai.upload_file(path=temp_video_path)
+                    # 🌟 採用自訂的 REST API 直接上傳，徹底避開 $discovery 阻擋問題
+                    import urllib.request
+                    import json
                     
-                    while video_file_ai.state.name == "PROCESSING":
+                    file_size = os.path.getsize(temp_video_path)
+                    url_start = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key.strip()}"
+                    req_start = urllib.request.Request(url_start, method="POST")
+                    req_start.add_header("X-Goog-Upload-Protocol", "resumable")
+                    req_start.add_header("X-Goog-Upload-Command", "start")
+                    req_start.add_header("X-Goog-Upload-Header-Content-Length", str(file_size))
+                    req_start.add_header("X-Goog-Upload-Header-Content-Type", "video/mp4")
+                    req_start.add_header("Content-Type", "application/json")
+                    
+                    data = json.dumps({"file": {"display_name": os.path.basename(temp_video_path)}}).encode("utf-8")
+                    with urllib.request.urlopen(req_start, data=data) as response:
+                        upload_url = response.headers.get("X-Goog-Upload-URL")
+                    
+                    with open(temp_video_path, "rb") as f:
+                        file_bytes = f.read()
+                        
+                    req_up = urllib.request.Request(upload_url, method="POST")
+                    req_up.add_header("X-Goog-Upload-Protocol", "resumable")
+                    req_up.add_header("X-Goog-Upload-Command", "upload, finalize")
+                    req_up.add_header("X-Goog-Upload-Offset", "0")
+                    
+                    with urllib.request.urlopen(req_up, data=file_bytes) as response:
+                        res_data = json.loads(response.read().decode("utf-8"))
+                        file_uri = res_data["file"]["uri"]
+                        file_name = res_data["file"]["name"]
+
+                    # 等待影片處理完成
+                    url_check = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key.strip()}"
+                    while True:
+                        req_check = urllib.request.Request(url_check, method="GET")
+                        with urllib.request.urlopen(req_check) as response:
+                            check_data = json.loads(response.read().decode("utf-8"))
+                            if check_data.get("state") == "ACTIVE":
+                                break
+                            elif check_data.get("state") == "FAILED":
+                                raise Exception("影片處理失敗，請嘗試其他影片。")
                         time.sleep(2)
-                        video_file_ai = genai.get_file(name=video_file_ai.name)
+                    
+                    # 建立適用於 model.generate_content 的檔案物件
+                    import google.ai.generativelanguage as glm
+                    video_file_ai = glm.Part(file_data=glm.FileData(mime_type="video/mp4", file_uri=file_uri))
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
