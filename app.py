@@ -94,20 +94,11 @@ with col2:
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
 target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"], key=f"model_select_{st.session_state.reset_counter}")
-upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (無上限上傳，AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True, key=f"upload_mode_{st.session_state.reset_counter}")
-
 uploaded_files = None
-uploaded_video = None
 enable_blur = False
 
-if "多張活動照片" in upload_mode:
-    enable_blur = st.toggle("✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)", value=True, key=f"blur_{st.session_state.reset_counter}")
-    uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片 (數量無上限)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"files_{st.session_state.reset_counter}")
-else:
-    uploaded_video = st.file_uploader("請上傳一段活動影片", type=['mp4', 'mov', 'avi', 'mkv'], accept_multiple_files=False, key=f"video_{st.session_state.reset_counter}")
-    if uploaded_video:
-        st.success("🎥 影片上傳成功！")
-        st.video(uploaded_video)
+enable_blur = st.toggle("✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)", value=True, key=f"blur_{st.session_state.reset_counter}")
+uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片 (數量無上限)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"files_{st.session_state.reset_counter}")
 
 # --- 🚀 執行與操作按鈕區 ---
 st.markdown("---")
@@ -125,16 +116,14 @@ with btn_col2:
 if generate_btn:
     if not api_key:
         st.error("請先在最上方輸入 Gemini API Key！")
-    elif "多張活動照片" in upload_mode and not uploaded_files:
+    elif not uploaded_files:
         st.error("請至少上傳一張照片！")
-    elif "單一活動影片" in upload_mode and not uploaded_video:
-        st.error("請先上傳影片檔案！")
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
                 target_model = target_model_ui
                 
-                if "多張活動照片" in upload_mode:
+                if True:
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(target_model)
                     
@@ -174,202 +163,39 @@ if generate_btn:
                             response_text = response.text
                         else:
                             raise e
-                else:
-                    # 影片模式：建立暫存檔案
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
-                        tfile.write(uploaded_video.read())
-                        temp_video_path = tfile.name
-
-                    # 🌟 採用自訂的 REST API 直接上傳，徹底避開 $discovery 阻擋問題
-                    
-                    # 💡 自動偵測影片的真實格式 (MIME Type)，避免硬編碼造成 Google 後台解析失敗回傳 404
-                    mime_type, _ = mimetypes.guess_type(uploaded_video.name)
-                    if not mime_type:
-                        mime_type = "video/mp4"
-                    
-                    file_size = os.path.getsize(temp_video_path)
-                    url_start = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key.strip()}"
-                    req_start = urllib.request.Request(url_start, method="POST")
-                    req_start.add_header("X-Goog-Upload-Protocol", "resumable")
-                    req_start.add_header("X-Goog-Upload-Command", "start")
-                    req_start.add_header("X-Goog-Upload-Header-Content-Length", str(file_size))
-                    req_start.add_header("X-Goog-Upload-Header-Content-Type", mime_type)
-                    req_start.add_header("Content-Type", "application/json")
-                    
-                    data = json.dumps({"file": {"display_name": os.path.basename(temp_video_path)}}).encode("utf-8")
-                    with urllib.request.urlopen(req_start, data=data) as response:
-                        upload_url = response.headers.get("X-Goog-Upload-URL")
-                    
-                    with open(temp_video_path, "rb") as f:
-                        file_bytes = f.read()
-                        
-                    req_up = urllib.request.Request(upload_url, method="POST")
-                    req_up.add_header("X-Goog-Upload-Protocol", "resumable")
-                    req_up.add_header("X-Goog-Upload-Command", "upload, finalize")
-                    req_up.add_header("X-Goog-Upload-Offset", "0")
-                    
-                    with urllib.request.urlopen(req_up, data=file_bytes) as response:
-                        res_data = json.loads(response.read().decode("utf-8"))
-                        file_uri = res_data["file"]["uri"]
-                        file_name = res_data["file"]["name"]
-
-                    # 等待影片處理完成
-                    url_check = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key.strip()}"
-                    
-                    status_text = st.empty()
-                    wait_seconds = 0
-                    
-                    while True:
-                        req_check = urllib.request.Request(url_check, method="GET")
-                        with urllib.request.urlopen(req_check) as response:
-                            check_data = json.loads(response.read().decode("utf-8"))
-                            current_state = check_data.get("state", "UNKNOWN")
-                            
-                            if current_state == "ACTIVE":
-                                status_text.success(f"✅ 影片於 Google 伺服器處理完成！(共等待 {wait_seconds} 秒，開始生成文案...)")
-                                break
-                            elif current_state == "FAILED":
-                                status_text.error("❌ 影片處理失敗，這可能是影片編碼或格式不支援。")
-                                raise Exception("影片處理失敗，請嘗試其他影片。")
-                            else:
-                                status_text.info(f"⏳ Google 伺服器正在逐格分析您的影片... 目前狀態：{current_state} (已等待 {wait_seconds} 秒)")
-                                
-                        time.sleep(2)
-                        wait_seconds += 2
-                        
-                        if wait_seconds > 600: # 10分鐘超時強制中斷
-                            status_text.error("❌ 伺服器處理逾時 (超過10分鐘)，系統自動中斷。")
-                            raise Exception("處理逾時，請稍後重試或上傳較短的影片。")
-                    
-                    prompt_text = f"""
-                    你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                    請觀看並深度分析這段活動影片，並依據以下設定為雙平台撰寫吸睛的文案：
-
-                    【核心設定】
-                    - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
-                    - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
-
-                    【📝 文案長度與風格嚴格限制】: 「{text_length}」
-                    - 一句話入魂：總字數不超過 50 字。
-                    - 微故事：字數嚴格控制在 100~150 字以內。
-                    - 情境對話：重現現場對話，字數同樣控制在 150 字以內。
-
-                    【任務要求】
-                    1. 幫影片想 3 個吸睛的「短影音大標題」。
-                    2. 撰寫【IG 貼文文案】（含豐富表情符號，並加上 #小鳥幼兒園）。
-                    3. 撰寫【FB 貼文文案】（結尾帶入互動目標，並同步加上 #小鳥幼兒園 標籤）。
-                    4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
-                    """
-                    
-                    # 🌟 採用純 REST API 直接與後台對接，徹底根絕官方 SDK 死結/無限重試造成的當機卡死
-                    
-                    # 💡 終極容災機制：自動巡迴切換所有可用模型
-                    fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-pro-latest"]
-                    if target_model in fallback_models:
-                        fallback_models.remove(target_model)
-                    fallback_models.insert(0, target_model)
-                    
-                    response_text = None
-                    last_error = None
-                    
-                    for current_model in fallback_models:
-                        status_text.info(f"🔄 正在配置模型 {current_model} 準備生成文案...")
-                        url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={api_key.strip()}"
-                        payload = {
-                            "contents": [{
-                                "parts": [
-                                    {"text": prompt_text},
-                                    {"fileData": {"mimeType": mime_type, "fileUri": file_uri}}
-                                ]
-                            }]
-                        }
-                        req_generate = urllib.request.Request(url_generate, method="POST")
-                        req_generate.add_header("Content-Type", "application/json")
-                        
-                        success = False
-                        for attempt in range(3): # 每個模型給予 3 次機會
-                            try:
-                                with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=120) as response:
-                                    gen_data = json.loads(response.read().decode("utf-8"))
-                                    if "candidates" in gen_data and gen_data["candidates"]:
-                                        response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
-                                        success = True
-                                        break
-                                    else:
-                                        response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
-                                        success = True
-                                        break
-                            except urllib.error.HTTPError as e:
-                                try:
-                                    error_body = e.read().decode("utf-8")
-                                except Exception:
-                                    error_body = ""
-                                last_error = f"HTTP {e.code}: {error_body}"
-                                
-                                if e.code == 503:
-                                    if attempt < 2:
-                                        status_text.warning(f"⚠️ {current_model} Google伺服器高負載 (503)，等待 8 秒後重試 (第 {attempt+1}/3 次)...")
-                                        time.sleep(8)
-                                        continue
-                                    else:
-                                        status_text.warning(f"⚠️ {current_model} 伺服器無回應，自動切換至下一個備用模型...")
-                                        break # 失敗 3 次，跳出內層迴圈換模型
-                                elif e.code == 404:
-                                    status_text.warning(f"⚠️ {current_model} 權限不足或不存在 (404)，自動切換至下一個備用模型...")
-                                    break # 型號錯誤，直接換下一個
-                                else:
-                                    status_text.warning(f"⚠️ {current_model} 發生錯誤 ({e.code})，自動切換...")
-                                    break # 其他錯誤，換下一個
-                            except Exception as e:
-                                last_error = str(e)
-                                status_text.warning(f"⚠️ 網路連線超時，自動切換下一個備用模型...")
-                                break
-                        
-                        if success:
-                            break
-                            
-                    if not response_text:
-                        raise Exception(f"Google 影片分析伺服器目前全面大塞車 (503)，已嘗試 {len(fallback_models)} 種模型皆無法擠進隊伍。\n這純粹是 Google 端的容量問題，請您 15 分鐘後再試。\n最後錯誤紀錄：{last_error}")
-
-                    try: os.remove(temp_video_path)
-                    except Exception: pass
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
                 
-                if "多張活動照片" in upload_mode:
-                    match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
-                    if match:
-                        st.markdown("### 🏆 AI 嚴選最佳照片")
-                        st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」** 即可！")
-                        
-                        raw_indices = match.group(1).split(',')
-                        selected_files = []
-                        for idx_str in raw_indices:
-                            idx_str = idx_str.strip()
-                            if idx_str.isdigit():
-                                idx = int(idx_str) - 1
-                                if 0 <= idx < len(uploaded_files):
-                                    selected_files.append(uploaded_files[idx])
-                        
-                        if selected_files:
-                            img_cols = st.columns(2)
-                            for idx, s_file in enumerate(selected_files):
-                                original_img = Image.open(s_file)
-                                if enable_blur:
-                                    final_img = add_blur_padding(original_img)
-                                    caption_text = f"精選第 {idx+1} 張 (已防裁切處理)"
-                                else:
-                                    final_img = original_img
-                                    caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
-                                img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
+                match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
+                if match:
+                    st.markdown("### 🏆 AI 嚴選最佳照片")
+                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」** 即可！")
+                    
+                    raw_indices = match.group(1).split(',')
+                    selected_files = []
+                    for idx_str in raw_indices:
+                        idx_str = idx_str.strip()
+                        if idx_str.isdigit():
+                            idx = int(idx_str) - 1
+                            if 0 <= idx < len(uploaded_files):
+                                selected_files.append(uploaded_files[idx])
+                    
+                    if selected_files:
+                        img_cols = st.columns(2)
+                        for idx, s_file in enumerate(selected_files):
+                            original_img = Image.open(s_file)
+                            if enable_blur:
+                                final_img = add_blur_padding(original_img)
+                                caption_text = f"精選第 {idx+1} 張 (已防裁切處理)"
+                            else:
+                                final_img = original_img
+                                caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
+                            img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
                     
                     clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
                     st.markdown("### 📊 文案與詳細建議")
                     st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
-                else:
-                    st.markdown("### 📊 影片文案與標題建議")
-                    st.text_area("您可以直接複製以下全部內容", value=response_text, height=400)
 
             except Exception as e:
                 st.error(f"系統偵測到錯誤：{e}")
