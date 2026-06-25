@@ -89,7 +89,7 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
-target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"], key=f"model_select_{st.session_state.reset_counter}")
+target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"], key=f"model_select_{st.session_state.reset_counter}")
 upload_mode = st.radio("選擇您要上傳的素材類型：", ["🖼️ 多張活動照片 (無上限上傳，AI 自動嚴選 10 張)", "🎥 單一活動影片 (AI 生成短影音文案)"], horizontal=True, key=f"upload_mode_{st.session_state.reset_counter}")
 
 uploaded_files = None
@@ -159,8 +159,17 @@ if generate_btn:
                     === FB 貼文 ===
                     """
                     contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
-                    response = model.generate_content(contents)
-                    response_text = response.text
+                    try:
+                        response = model.generate_content(contents)
+                        response_text = response.text
+                    except Exception as e:
+                        if "503" in str(e) or "UNAVAILABLE" in str(e):
+                            st.warning(f"⚠️ {target_model} 伺服器塞車中，系統自動為您切換至穩定版 gemini-flash-latest...")
+                            model = genai.GenerativeModel("gemini-flash-latest")
+                            response = model.generate_content(contents)
+                            response_text = response.text
+                        else:
+                            raise e
                 else:
                     # 影片模式：建立暫存檔案
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_video.name)[1]) as tfile:
@@ -279,9 +288,9 @@ if generate_btn:
                                     break
                         except urllib.error.HTTPError as e:
                             if e.code == 503:
-                                if "gemini-1.5-flash" != target_model:
-                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-1.5-flash 並重試...")
-                                    target_model = "gemini-1.5-flash"
+                                if "gemini-flash-latest" != target_model:
+                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-flash-latest 並重試...")
+                                    target_model = "gemini-flash-latest"
                                     url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
                                     req_generate = urllib.request.Request(url_generate, method="POST")
                                     req_generate.add_header("Content-Type", "application/json")
