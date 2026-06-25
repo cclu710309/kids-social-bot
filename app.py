@@ -93,7 +93,6 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
-target_model_ui = st.selectbox("🤖 AI 模型選擇 (如遇 503 伺服器忙碌錯誤，請切換備用模型)", ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"], key=f"model_select_{st.session_state.reset_counter}")
 uploaded_files = None
 enable_blur = False
 
@@ -121,48 +120,55 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                target_model = target_model_ui
+                genai.configure(api_key=api_key)
                 
-                if True:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(target_model)
-                    
-                    prompt_text = f"""
-                    你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                    我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
-                    
-                    【核心設定】
-                    - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
-                    - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
+                prompt_text = f"""
+                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
+                我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
+                
+                【核心設定】
+                - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
+                - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
 
-                    【文案長度與風格限制】: 「{text_length}」
-                    - 一句話入魂：不超過 50 字。
-                    - 微故事：總字數嚴格控制在 100~150 字以內。
-                    - 情境對話：以引號重現現場對話，字數控制在 150 字以內。
+                【文案長度與風格限制】: 「{text_length}」
+                - 一句話入魂：不超過 50 字。
+                - 微故事：總字數嚴格控制在 100~150 字以內。
+                - 情境對話：以引號重現現場對話，字數控制在 150 字以內。
 
-                    【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
-                    1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
-                    2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
-                    3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
-                    [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
+                【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
+                1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
+                2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
+                3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
+                [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
-                    【任務 2：撰寫雙平台文案】
-                    === IG 挑圖建議 ===
-                    === IG 貼文 ===
-                    === FB 貼文 ===
-                    """
-                    contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
+                【任務 2：撰寫雙平台文案】
+                === IG 挑圖建議 ===
+                === IG 貼文 ===
+                === FB 貼文 ===
+                """
+                contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
+                
+                fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]
+                response_text = None
+                status_text = st.empty()
+                
+                for idx, current_model in enumerate(fallback_models):
                     try:
+                        if idx > 0:
+                            status_text.warning(f"🔄 正在為您自動嘗試備用模型: {current_model}...")
+                        model = genai.GenerativeModel(current_model)
                         response = model.generate_content(contents)
                         response_text = response.text
+                        status_text.empty()
+                        break
                     except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e):
-                            st.warning(f"⚠️ {target_model} 伺服器塞車中，系統自動為您切換至穩定版 gemini-flash-latest...")
-                            model = genai.GenerativeModel("gemini-flash-latest")
-                            response = model.generate_content(contents)
-                            response_text = response.text
+                        if "503" in str(e) or "UNAVAILABLE" in str(e) or "404" in str(e) or "not found" in str(e).lower():
+                            continue
                         else:
                             raise e
+                            
+                if not response_text:
+                    raise Exception("目前所有 Google AI 伺服器皆忙碌中 (503) 或權限錯誤，系統已自動嘗試多種最新模型皆失敗，請稍後再試。")
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
