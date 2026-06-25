@@ -6,6 +6,10 @@ import base64
 import re
 import tempfile
 import time
+import urllib.request
+import urllib.error
+import json
+import mimetypes
 
 # =========================================================================
 # 🔑 安全機制：Streamlit 隱私保險箱自動載入區
@@ -177,9 +181,6 @@ if generate_btn:
                         temp_video_path = tfile.name
 
                     # 🌟 採用自訂的 REST API 直接上傳，徹底避開 $discovery 阻擋問題
-                    import urllib.request
-                    import json
-                    import mimetypes
                     
                     # 💡 自動偵測影片的真實格式 (MIME Type)，避免硬編碼造成 Google 後台解析失敗回傳 404
                     mime_type, _ = mimetypes.guess_type(uploaded_video.name)
@@ -261,66 +262,77 @@ if generate_btn:
                     """
                     
                     # 🌟 採用純 REST API 直接與後台對接，徹底根絕官方 SDK 死結/無限重試造成的當機卡死
-                    import urllib.error
                     
-                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
-                    payload = {
-                        "contents": [{
-                            "parts": [
-                                {"text": prompt_text},
-                                {"fileData": {"mimeType": mime_type, "fileUri": file_uri}}
-                            ]
-                        }]
-                    }
-                    req_generate = urllib.request.Request(url_generate, method="POST")
-                    req_generate.add_header("Content-Type", "application/json")
+                    # 💡 終極容災機制：自動巡迴切換所有可用模型
+                    fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-pro-latest"]
+                    if target_model in fallback_models:
+                        fallback_models.remove(target_model)
+                    fallback_models.insert(0, target_model)
                     
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=120) as response:
-                                gen_data = json.loads(response.read().decode("utf-8"))
-                                if "candidates" in gen_data and gen_data["candidates"]:
-                                    response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
-                                    break # 成功
-                                else:
-                                    response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
-                                    break
-                        except urllib.error.HTTPError as e:
-                            if e.code == 503:
-                                if "gemini-flash-latest" != target_model:
-                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-flash-latest 並重試...")
-                                    target_model = "gemini-flash-latest"
-                                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
-                                    req_generate = urllib.request.Request(url_generate, method="POST")
-                                    req_generate.add_header("Content-Type", "application/json")
-                                    time.sleep(2)
-                                    continue
-                                elif attempt < max_retries - 1:
-                                    status_text.warning("⚠️ 伺服器依然忙碌中，等待 5 秒後自動重試...")
-                                    time.sleep(5)
-                                    continue
-                                else:
-                                    error_body = e.read().decode("utf-8")
-                                    raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
-                            else:
-                                error_body = e.read().decode("utf-8")
-                                # 取得可用模型清單
+                    response_text = None
+                    last_error = None
+                    
+                    for current_model in fallback_models:
+                        status_text.info(f"🔄 正在配置模型 {current_model} 準備生成文案...")
+                        url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={api_key.strip()}"
+                        payload = {
+                            "contents": [{
+                                "parts": [
+                                    {"text": prompt_text},
+                                    {"fileData": {"mimeType": mime_type, "fileUri": file_uri}}
+                                ]
+                            }]
+                        }
+                        req_generate = urllib.request.Request(url_generate, method="POST")
+                        req_generate.add_header("Content-Type", "application/json")
+                        
+                        success = False
+                        for attempt in range(3): # 每個模型給予 3 次機會
+                            try:
+                                with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=120) as response:
+                                    gen_data = json.loads(response.read().decode("utf-8"))
+                                    if "candidates" in gen_data and gen_data["candidates"]:
+                                        response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
+                                        success = True
+                                        break
+                                    else:
+                                        response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
+                                        success = True
+                                        break
+                            except urllib.error.HTTPError as e:
                                 try:
-                                    req_models = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key.strip()}", method="GET")
-                                    with urllib.request.urlopen(req_models) as m_res:
-                                        m_data = json.loads(m_res.read().decode("utf-8"))
-                                        available = [m["name"].replace("models/", "") for m in m_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-                                except:
-                                    available = ["查詢失敗"]
-                                raise Exception(f"HTTP Error {e.code}: {e.reason}\n詳細錯誤內容：{error_body}\n\n💡 系統偵測：您目前金鑰支援的模型清單為：{', '.join(available)}")
-                        except Exception as e:
-                            raise Exception(f"網路連線錯誤或超時：{e}")
-                    else:
-                        raise Exception("Google 伺服器目前過載 (多次 503 錯誤)，請稍後再試。")
+                                    error_body = e.read().decode("utf-8")
+                                except Exception:
+                                    error_body = ""
+                                last_error = f"HTTP {e.code}: {error_body}"
+                                
+                                if e.code == 503:
+                                    if attempt < 2:
+                                        status_text.warning(f"⚠️ {current_model} Google伺服器高負載 (503)，等待 8 秒後重試 (第 {attempt+1}/3 次)...")
+                                        time.sleep(8)
+                                        continue
+                                    else:
+                                        status_text.warning(f"⚠️ {current_model} 伺服器無回應，自動切換至下一個備用模型...")
+                                        break # 失敗 3 次，跳出內層迴圈換模型
+                                elif e.code == 404:
+                                    status_text.warning(f"⚠️ {current_model} 權限不足或不存在 (404)，自動切換至下一個備用模型...")
+                                    break # 型號錯誤，直接換下一個
+                                else:
+                                    status_text.warning(f"⚠️ {current_model} 發生錯誤 ({e.code})，自動切換...")
+                                    break # 其他錯誤，換下一個
+                            except Exception as e:
+                                last_error = str(e)
+                                status_text.warning(f"⚠️ 網路連線超時，自動切換下一個備用模型...")
+                                break
+                        
+                        if success:
+                            break
+                            
+                    if not response_text:
+                        raise Exception(f"Google 影片分析伺服器目前全面大塞車 (503)，已嘗試 {len(fallback_models)} 種模型皆無法擠進隊伍。\n這純粹是 Google 端的容量問題，請您 15 分鐘後再試。\n最後錯誤紀錄：{last_error}")
 
                     try: os.remove(temp_video_path)
-                    except: pass
+                    except Exception: pass
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
