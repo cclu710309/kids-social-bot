@@ -251,33 +251,64 @@ if generate_btn:
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
                     
-                    # 🌟 採用官方 SDK 進行生成，確保格式 100% 吻合
-                    genai.configure(api_key=api_key.strip())
-                    model = genai.GenerativeModel(target_model)
+                    # 🌟 採用純 REST API 直接與後台對接，徹底根絕官方 SDK 死結/無限重試造成的當機卡死
+                    import urllib.error
                     
-                    # 建立符合 SDK 要求的檔案物件字典
-                    video_part = {"file_data": {"mime_type": mime_type, "file_uri": file_uri}}
+                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
+                    payload = {
+                        "contents": [{
+                            "parts": [
+                                {"text": prompt_text},
+                                {"fileData": {"mimeType": mime_type, "fileUri": file_uri}}
+                            ]
+                        }]
+                    }
+                    req_generate = urllib.request.Request(url_generate, method="POST")
+                    req_generate.add_header("Content-Type", "application/json")
                     
-                    try:
-                        response = model.generate_content([prompt_text, video_part])
-                        response_text = response.text
-                    except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e) or "overloaded" in str(e).lower():
-                            status_text.warning(f"⚠️ {target_model} 伺服器塞車中，系統自動降級至穩定版 gemini-1.5-flash 並重試...")
-                            model = genai.GenerativeModel("gemini-1.5-flash")
-                            response = model.generate_content([prompt_text, video_part])
-                            response_text = response.text
-                        else:
-                            # 萬一發生 404 或其他錯誤，立刻查詢這把金鑰真實可用的模型有哪些
-                            try:
-                                import urllib.request, json
-                                req_models = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key.strip()}", method="GET")
-                                with urllib.request.urlopen(req_models) as m_res:
-                                    m_data = json.loads(m_res.read().decode("utf-8"))
-                                    available = [m["name"].replace("models/", "") for m in m_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-                            except:
-                                available = ["查詢失敗"]
-                            raise Exception(f"AI 生成錯誤：{e}\n\n💡 系統偵測：您目前金鑰支援的模型清單為：{', '.join(available)}")
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            with urllib.request.urlopen(req_generate, data=json.dumps(payload).encode("utf-8"), timeout=120) as response:
+                                gen_data = json.loads(response.read().decode("utf-8"))
+                                if "candidates" in gen_data and gen_data["candidates"]:
+                                    response_text = gen_data["candidates"][0]["content"]["parts"][0]["text"]
+                                    break # 成功
+                                else:
+                                    response_text = f"生成失敗或被安全機制阻擋。API 回應內容：{gen_data}"
+                                    break
+                        except urllib.error.HTTPError as e:
+                            if e.code == 503:
+                                if "gemini-1.5-flash" != target_model:
+                                    status_text.warning(f"⚠️ {target_model} 塞車中，系統自動降級至穩定版 gemini-1.5-flash 並重試...")
+                                    target_model = "gemini-1.5-flash"
+                                    url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
+                                    req_generate = urllib.request.Request(url_generate, method="POST")
+                                    req_generate.add_header("Content-Type", "application/json")
+                                    time.sleep(2)
+                                    continue
+                                elif attempt < max_retries - 1:
+                                    status_text.warning("⚠️ 伺服器依然忙碌中，等待 5 秒後自動重試...")
+                                    time.sleep(5)
+                                    continue
+                                else:
+                                    error_body = e.read().decode("utf-8")
+                                    raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
+                            else:
+                                error_body = e.read().decode("utf-8")
+                                # 取得可用模型清單
+                                try:
+                                    req_models = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key.strip()}", method="GET")
+                                    with urllib.request.urlopen(req_models) as m_res:
+                                        m_data = json.loads(m_res.read().decode("utf-8"))
+                                        available = [m["name"].replace("models/", "") for m in m_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+                                except:
+                                    available = ["查詢失敗"]
+                                raise Exception(f"HTTP Error {e.code}: {e.reason}\n詳細錯誤內容：{error_body}\n\n💡 系統偵測：您目前金鑰支援的模型清單為：{', '.join(available)}")
+                        except Exception as e:
+                            raise Exception(f"網路連線錯誤或超時：{e}")
+                    else:
+                        raise Exception("Google 伺服器目前過載 (多次 503 錯誤)，請稍後再試。")
 
                     try: os.remove(temp_video_path)
                     except: pass
