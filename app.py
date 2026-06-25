@@ -132,6 +132,7 @@ if generate_btn:
                 
                 if "多張活動照片" in upload_mode:
                     genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(target_model)
                     
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -169,6 +170,12 @@ if generate_btn:
                     # 🌟 採用自訂的 REST API 直接上傳，徹底避開 $discovery 阻擋問題
                     import urllib.request
                     import json
+                    import mimetypes
+                    
+                    # 💡 自動偵測影片的真實格式 (MIME Type)，避免硬編碼造成 Google 後台解析失敗回傳 404
+                    mime_type, _ = mimetypes.guess_type(uploaded_video.name)
+                    if not mime_type:
+                        mime_type = "video/mp4"
                     
                     file_size = os.path.getsize(temp_video_path)
                     url_start = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key.strip()}"
@@ -176,7 +183,7 @@ if generate_btn:
                     req_start.add_header("X-Goog-Upload-Protocol", "resumable")
                     req_start.add_header("X-Goog-Upload-Command", "start")
                     req_start.add_header("X-Goog-Upload-Header-Content-Length", str(file_size))
-                    req_start.add_header("X-Goog-Upload-Header-Content-Type", "video/mp4")
+                    req_start.add_header("X-Goog-Upload-Header-Content-Type", mime_type)
                     req_start.add_header("Content-Type", "application/json")
                     
                     data = json.dumps({"file": {"display_name": os.path.basename(temp_video_path)}}).encode("utf-8")
@@ -224,10 +231,6 @@ if generate_btn:
                             status_text.error("❌ 伺服器處理逾時 (超過10分鐘)，系統自動中斷。")
                             raise Exception("處理逾時，請稍後重試或上傳較短的影片。")
                     
-                    # 建立適用於 model.generate_content 的檔案物件
-                    import google.ai.generativelanguage as glm
-                    video_file_ai = glm.Part(file_data=glm.FileData(mime_type="video/mp4", file_uri=file_uri))
-                    
                     prompt_text = f"""
                     你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
                     請觀看並深度分析這段活動影片，並依據以下設定為雙平台撰寫吸睛的文案：
@@ -248,12 +251,6 @@ if generate_btn:
                     4. 附帶一個【AI 小編建議】，簡述這個影片最亮眼、最能打動家長的是哪一個畫面或瞬間。
                     """
                     
-                    # 🌟 採用最新一代完全不經由代理、直接與後台直連的生成指令 (純 REST，保證不卡死)
-                    import urllib.error
-                    
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        url_generate = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key.strip()}"
                         payload = {
                             "contents": [{
                                 "parts": [
