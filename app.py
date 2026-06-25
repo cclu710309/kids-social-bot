@@ -142,9 +142,16 @@ if generate_btn:
                 [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                 【任務 2：撰寫雙平台文案】
-                === IG 挑圖建議 ===
-                === IG 貼文 ===
-                === FB 貼文 ===
+                請嚴格遵守上方的【核心設定】與【文案長度與風格限制】來撰寫，並使用以下標籤包裝您的回應，方便系統解析：
+                [IG_POST]
+                這裡放 IG 貼文內容（含豐富表情符號，並加上 #小鳥幼兒園）
+                [/IG_POST]
+                [FB_POST]
+                這裡放 FB 貼文內容（結尾帶入互動目標，並同步加上 #小鳥幼兒園 標籤）
+                [/FB_POST]
+                [SUGGESTION]
+                這裡放 IG 挑圖建議（簡述這個照片組合最亮眼、最能打動家長的是哪一個畫面或瞬間）
+                [/SUGGESTION]
                 """
                 contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
                 
@@ -199,9 +206,26 @@ if generate_btn:
                                 caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
                             img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
                     
-                    clean_response = re.sub(r'\[SELECTED_IMAGES\].*?\[/SELECTED_IMAGES\]', '', response_text, flags=re.DOTALL).strip()
-                    st.markdown("### 📊 文案與詳細建議")
-                    st.text_area("您可以直接複製以下全部內容", value=clean_response, height=400)
+                    fb_match = re.search(r'\[FB_POST\](.*?)\[/FB_POST\]', response_text, re.DOTALL)
+                    ig_match = re.search(r'\[IG_POST\](.*?)\[/IG_POST\]', response_text, re.DOTALL)
+                    sug_match = re.search(r'\[SUGGESTION\](.*?)\[/SUGGESTION\]', response_text, re.DOTALL)
+                    
+                    fb_text = fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
+                    ig_text = ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
+                    sug_text = sug_match.group(1).strip() if sug_match else "無提供建議"
+                    
+                    st.markdown("---")
+                    st.markdown("### 📘 Facebook 貼文文案")
+                    st.text_area("FB 專用格式（已加上互動目標）", value=fb_text, height=200, key="fb_area")
+                    
+                    st.markdown("### 📸 Instagram 貼文文案")
+                    st.text_area("IG 專用格式（豐富表情與排版）", value=ig_text, height=200, key="ig_area")
+                    
+                    st.markdown("### 💡 AI 小編挑圖建議")
+                    st.info(sug_text)
+                    
+                    with st.expander("🔍 檢視 AI 原始完整回應 (除錯用)"):
+                        st.text(response_text)
 
             except Exception as e:
                 st.error(f"系統偵測到錯誤：{e}")
