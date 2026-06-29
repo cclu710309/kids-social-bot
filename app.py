@@ -35,6 +35,23 @@ def add_blur_padding(img, target_ratio=4/5):
     bg.paste(img, (offset_x, offset_y))
     return bg
 
+# --- API 專用：限制最大邊長以節省傳輸頻寬與防超時 ---
+def resize_image_for_api(img, max_size=1024):
+    try:
+        img_w, img_h = img.size
+        if img_w <= max_size and img_h <= max_size:
+            return img
+        if img_w > img_h:
+            new_w = max_size
+            new_h = int(img_h * (max_size / img_w))
+        else:
+            new_h = max_size
+            new_w = int(img_w * (max_size / img_h))
+        return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    except Exception:
+        return img
+
+
 # --- 頁面設定 ---
 if os.path.exists("logo.png"):
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=Image.open("logo.png"), layout="wide")
@@ -159,34 +176,42 @@ if generate_btn:
                 """
                 
                 # 開啟圖片並重設檔案 stream 指標，快取已開啟的 PIL 圖片以防 stream 指標被消耗後無法讀取
+                # 同時壓縮 API 傳輸圖片以防超時
                 opened_images = []
+                api_images = []
                 for file in uploaded_files:
                     file.seek(0)
-                    opened_images.append(Image.open(file))
+                    img = Image.open(file)
+                    opened_images.append(img)
+                    api_images.append(resize_image_for_api(img, max_size=1024))
                 
-                contents = [prompt_text] + opened_images
+                contents = [prompt_text] + api_images
                 
                 fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
                 response_text = None
                 status_text = st.empty()
+                last_error = None
                 
                 for idx, current_model in enumerate(fallback_models):
                     try:
                         if idx > 0:
                             status_text.warning(f"🔄 正在為您自動嘗試備用模型: {current_model}...")
                         model = genai.GenerativeModel(current_model)
-                        response = model.generate_content(contents)
+                        # 加入 request_options 設定 timeout，防範 REST 網路卡死
+                        response = model.generate_content(contents, request_options={"timeout": 60})
                         response_text = response.text
                         status_text.empty()
                         break
                     except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e) or "404" in str(e) or "not found" in str(e).lower():
-                            continue
-                        else:
-                            raise e
+                        last_error = e
+                        continue
                             
                 if not response_text:
-                    raise Exception("目前所有 Google AI 伺服器皆忙碌中 (503) 或權限錯誤，系統已自動嘗試多種最新模型皆失敗，請稍後再試。")
+                    if last_error:
+                        raise Exception(f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}")
+                    else:
+                        raise Exception("目前所有 Google AI 伺服器皆忙碌中，系統已自動嘗試多種最新模型皆失敗，請稍後再試。")
+
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
