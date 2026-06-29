@@ -120,7 +120,7 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
-                genai.configure(api_key=api_key)
+                genai.configure(api_key=api_key, transport="rest")
                 
                 prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
@@ -157,9 +157,16 @@ if generate_btn:
                 這裡放 IG 挑圖建議（簡述這個照片組合最亮眼、最能打動家長的是哪一個畫面或瞬間）
                 [/SUGGESTION]
                 """
-                contents = [prompt_text] + [Image.open(file) for file in uploaded_files]
                 
-                fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]
+                # 開啟圖片並重設檔案 stream 指標，快取已開啟的 PIL 圖片以防 stream 指標被消耗後無法讀取
+                opened_images = []
+                for file in uploaded_files:
+                    file.seek(0)
+                    opened_images.append(Image.open(file))
+                
+                contents = [prompt_text] + opened_images
+                
+                fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
                 response_text = None
                 status_text = st.empty()
                 
@@ -184,6 +191,7 @@ if generate_btn:
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
                 
+                # 1. 嚴選照片區塊 (僅在有對應標籤時渲染)
                 match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
                 if match:
                     st.markdown("### 🏆 AI 嚴選最佳照片")
@@ -195,41 +203,41 @@ if generate_btn:
                         idx_str = idx_str.strip()
                         if idx_str.isdigit():
                             idx = int(idx_str) - 1
-                            if 0 <= idx < len(uploaded_files):
-                                selected_files.append(uploaded_files[idx])
+                            if 0 <= idx < len(opened_images):
+                                selected_files.append((idx, opened_images[idx]))
                     
                     if selected_files:
                         img_cols = st.columns(2)
-                        for idx, s_file in enumerate(selected_files):
-                            original_img = Image.open(s_file)
+                        for col_idx, (orig_idx, original_img) in enumerate(selected_files):
                             if enable_blur:
                                 final_img = add_blur_padding(original_img)
-                                caption_text = f"精選第 {idx+1} 張 (已防裁切處理)"
+                                caption_text = f"精選第 {orig_idx+1} 張 (已防裁切處理)"
                             else:
                                 final_img = original_img
-                                caption_text = f"精選第 {idx+1} 張 (原圖尺寸)"
-                            img_cols[idx % 2].image(final_img, use_container_width=True, caption=caption_text)
-                    
-                    fb_match = re.search(r'\[FB_POST\](.*?)\[/FB_POST\]', response_text, re.DOTALL)
-                    ig_match = re.search(r'\[IG_POST\](.*?)\[/IG_POST\]', response_text, re.DOTALL)
-                    sug_match = re.search(r'\[SUGGESTION\](.*?)\[/SUGGESTION\]', response_text, re.DOTALL)
-                    
-                    fb_text = fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
-                    ig_text = ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
-                    sug_text = sug_match.group(1).strip() if sug_match else "無提供建議"
-                    
-                    st.markdown("---")
-                    st.markdown("### 📘 Facebook 貼文文案")
-                    st.text_area("FB 專用格式（已加上互動目標）", value=fb_text, height=200, key="fb_area")
-                    
-                    st.markdown("### 📸 Instagram 貼文文案")
-                    st.text_area("IG 專用格式（豐富表情與排版）", value=ig_text, height=200, key="ig_area")
-                    
-                    st.markdown("### 💡 AI 小編挑圖建議")
-                    st.info(sug_text)
-                    
-                    with st.expander("🔍 檢視 AI 原始完整回應 (除錯用)"):
-                        st.text(response_text)
+                                caption_text = f"精選第 {orig_idx+1} 張 (原圖尺寸)"
+                            img_cols[col_idx % 2].image(final_img, use_container_width=True, caption=caption_text)
+                
+                # 2. 雙平台貼文文案區塊 (不隸屬於 match 內，確保無標籤時依然可渲染文字)
+                fb_match = re.search(r'\[FB_POST\](.*?)\[/FB_POST\]', response_text, re.DOTALL)
+                ig_match = re.search(r'\[IG_POST\](.*?)\[/IG_POST\]', response_text, re.DOTALL)
+                sug_match = re.search(r'\[SUGGESTION\](.*?)\[/SUGGESTION\]', response_text, re.DOTALL)
+                
+                fb_text = fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
+                ig_text = ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
+                sug_text = sug_match.group(1).strip() if sug_match else "無提供建議"
+                
+                st.markdown("---")
+                st.markdown("### 📘 Facebook 貼文文案")
+                st.text_area("FB 專用格式（已加上互動目標）", value=fb_text, height=200, key="fb_area")
+                
+                st.markdown("### 📸 Instagram 貼文文案")
+                st.text_area("IG 專用格式（豐富表情與排版）", value=ig_text, height=200, key="ig_area")
+                
+                st.markdown("### 💡 AI 小編挑圖建議")
+                st.info(sug_text)
+                
+                with st.expander("🔍 檢視 AI 原始完整回應 (除錯用)"):
+                    st.text(response_text)
 
             except Exception as e:
                 st.error(f"系統偵測到錯誤：{e}")
