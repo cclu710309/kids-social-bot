@@ -1,15 +1,21 @@
+# =========================================================================
+# 🐦 小鳥幼兒園貼文神器 - 最終完全體正式版
+# Current Version: v3.0.0 (2026.07.02 Build)
+# 
+# 📄 變更日誌 (Changelog):
+# [2026.07.02] v3.0.0 - 重新校正跨平台規則落差，全面升級 2026 官方模型標準通道。
+#                      1. 依指示移出影片模式，專注優化多張照片分析。
+#                      2. 增加照片選用原則說明、照片成功接收狀態通知。
+#                      3. 修正 AI 挑圖限制：超過 10 張時強制精選剛好 10 張。
+#                      4. 畫面渲染優化：在每張嚴選照片下方直接顯示 AI 建議的擺放順序。
+# =========================================================================
+
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image, ImageFilter, ImageOps
 import os
 import base64
 import re
-import tempfile
-import time
-import urllib.request
-import urllib.error
-import json
-import mimetypes
 
 # =========================================================================
 # 🔑 安全機制：Streamlit 隱私保險箱自動載入區
@@ -51,7 +57,6 @@ def resize_image_for_api(img, max_size=1024):
     except Exception:
         return img
 
-
 # --- 頁面設定 ---
 if os.path.exists("logo.png"):
     st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=Image.open("logo.png"), layout="wide")
@@ -78,7 +83,7 @@ if os.path.exists("logo.png"):
 else:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 
-st.markdown("上傳活動照片或單一影片，設定風格，一鍵產出雙平台文案。")
+st.markdown("上傳活動照片，設定風格，一鍵智能嚴選並產出雙平台精美文案。")
 
 # --- ⚙️ 步驟 1：系統驗證 ---
 st.markdown("---")
@@ -110,11 +115,13 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
-uploaded_files = None
-enable_blur = False
 
 enable_blur = st.toggle("✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)", value=True, key=f"blur_{st.session_state.reset_counter}")
 uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片 (數量無上限)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"files_{st.session_state.reset_counter}")
+
+# 🌟 狀態通知：當照片成功匯入時，即時在網頁給予反饋
+if uploaded_files:
+    st.success(f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI 為您依據多樣性原則精選最佳畫面。")
 
 # --- 🚀 執行與操作按鈕區 ---
 st.markdown("---")
@@ -128,7 +135,7 @@ with btn_col2:
         st.session_state.reset_counter += 1
         st.rerun()
 
-# --- 🧠 AI 核心運作邏輯 (2026年最新語法適配版) ---
+# --- 🧠 AI 核心運作邏輯 (2026年最新穩定版通道) ---
 if generate_btn:
     if not api_key:
         st.error("請先在最上方輸入 Gemini API Key！")
@@ -137,6 +144,7 @@ if generate_btn:
     else:
         with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
             try:
+                # 使用標準 REST 協定配置
                 genai.configure(api_key=api_key, transport="rest")
                 
                 prompt_text = f"""
@@ -149,34 +157,33 @@ if generate_btn:
 
                 【文案長度與風格限制】: 必須嚴格依據您選取的「{text_length}」模式撰寫
                 - 一句話入魂 (極度精簡)：最高指導原則——「能用一個詞解決就不用一句話，能用一句話解決就絕對不寫一段話！」字數自然落在 50~60 字以內即可（請勿硬湊字數），保持洗鍊、震撼、直擊人心的風格。
-                - 微故事 (輕量精簡版)：總字數嚴格控制在 100~150 字以內。
-                - 情境對話 (還原現場童言童語)：以引號重現現場對話，字數控制在 150 字以內。
+                - 微故事 (輕量精簡版)：總字數嚴格控制在 100~150 字以內，最多拆成 2 到 3 個極短段落。
+                - 情境對話 (還原現場童言童語)：直接以引號重現現場對話，字數控制在 150 字以內。
                 
                 【核心撰寫原則】
                 1. 標籤規範：無論是 FB 或 IG 貼文，文末請務必「空一行」後，加入 6~8 個與照片內容相關的 hashtag（必須強制包含 #小鳥幼兒園 和 #everythingforkids 這兩個標籤）。
-                2. 互動克制：貼文內容請以自然敘事為主，絕對不要刻意加入要求家長互動的文字（例如：「大家覺得呢？」、「快來留言告訴我們」等），除非上方的「互動目標」中有明確勾選相關需求。
+                2. 互動克制：貼文內容請以自然敘事為主，絕對不要刻意加入要求家長互動的文字（例如：「大家覺得呢？」），除非上方勾選了明確的互動目標。
 
-                【任務 1：IG 智能挑圖 - 必須從中挑選最多 10 張且嚴格篩選多樣性】
-                1. 如果上傳總數大於 10 張，你「必須且只能」從中精選出「剛好 10 張」最精彩的照片。
-                2. 🌟防重複機制🌟：避免重複人物過多，強制畫面模式分散（必須包含遠景、中景、特寫）。
-                3. 必須在回應最開頭，用此格式列出挑選的照片數字序號：
+                【任務 1：IG 智能挑圖 - 照片選用原則與上限嚴格限制】
+                1. 🌟數量限制🌟：如果上傳總數大於 10 張，您「必須且只能」從中精選出「剛好 10 張」最精彩、最值得串成一篇相簿的照片。如果總數小於 10 張，請將上傳的所有序號全部列出。
+                2. 🌟多樣性選用原則🌟：在挑選時，必須嚴格避免單一人物重複率過高（不要都是同一個孩子的特寫），強制畫面模式分散（必須包含遠景呈現場景、中景呈現互動、特寫呈現專注表情）。
+                3. 您必須在整段回應的「最開頭」，使用以下暗號格式列出您挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母）：
                 [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
 
                 【任務 2：撰寫雙平台文案】
-                請嚴格遵守上方的【核心設定】與【核心撰寫原則】來撰寫，並使用以下標籤包裝您的回應，方便系統解析：
+                請嚴格遵守上方的設定與原則撰寫，並使用以下標籤包裹您的回應，方便系統解析：
                 [IG_POST]
                 這裡放 IG 貼文內容（含豐富表情符號，文末空一行加上 6~8 個 hashtag）
                 [/IG_POST]
                 [FB_POST]
-                這裡放 FB 貼文內容（如果沒有特別要求互動目標，請自然結尾，文末空一行加上 6~8 個 hashtag）
+                這裡放 FB 貼文內容（文末空一行加上 6~8 個 hashtag）
                 [/FB_POST]
                 [SUGGESTION]
                 這裡放 IG 挑圖建議（簡述這個照片組合最亮眼、最能打動家長的是哪一個畫面或瞬間）
                 [/SUGGESTION]
                 """
                 
-                # 開啟圖片並重設檔案 stream 指標，快取已開啟的 PIL 圖片以防 stream 指標被消耗後無法讀取
-                # 同時壓縮 API 傳輸圖片以防超時
+                # 預備快取圖片並等比例壓縮，防範 REST 超時
                 opened_images = []
                 api_images = []
                 for file in uploaded_files:
@@ -187,7 +194,8 @@ if generate_btn:
                 
                 contents = [prompt_text] + api_images
                 
-                fallback_models = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+                # 2026 最新官方穩定模型群防禦鏈
+                fallback_models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"]
                 response_text = None
                 status_text = st.empty()
                 last_error = None
@@ -197,7 +205,6 @@ if generate_btn:
                         if idx > 0:
                             status_text.warning(f"🔄 正在為您自動嘗試備用模型: {current_model}...")
                         model = genai.GenerativeModel(current_model)
-                        # 加入 request_options 設定 timeout，防範 REST 網路卡死
                         response = model.generate_content(contents, request_options={"timeout": 60})
                         response_text = response.text
                         status_text.empty()
@@ -207,16 +214,12 @@ if generate_btn:
                         continue
                             
                 if not response_text:
-                    if last_error:
-                        raise Exception(f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}")
-                    else:
-                        raise Exception("目前所有 Google AI 伺服器皆忙碌中，系統已自動嘗試多種最新模型皆失敗，請稍後再試。")
-
+                    raise Exception(f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}")
 
                 # --- 🎨 畫面渲染產出結果 ---
                 st.success(f"🎉 文案與分析皆已順利產出！")
                 
-                # 1. 嚴選照片區塊 (僅在有對應標籤時渲染)
+                # 1. 嚴選照片區塊與排序直顯
                 match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
                 if match:
                     st.markdown("### 🏆 AI 嚴選最佳照片")
@@ -224,25 +227,25 @@ if generate_btn:
                     
                     raw_indices = match.group(1).split(',')
                     selected_files = []
-                    for idx_str in raw_indices:
+                    for order_idx, idx_str in enumerate(raw_indices):
                         idx_str = idx_str.strip()
                         if idx_str.isdigit():
                             idx = int(idx_str) - 1
                             if 0 <= idx < len(opened_images):
-                                selected_files.append((idx, opened_images[idx]))
+                                selected_files.append((order_idx + 1, opened_images[idx]))
                     
                     if selected_files:
                         img_cols = st.columns(2)
-                        for col_idx, (orig_idx, original_img) in enumerate(selected_files):
+                        for col_idx, (display_order, original_img) in enumerate(selected_files):
                             if enable_blur:
                                 final_img = add_blur_padding(original_img)
-                                caption_text = f"精選第 {orig_idx+1} 張 (已防裁切處理)"
+                                caption_text = f"🏆 建議擺在第 {display_order} 張 (已防裁切處理)"
                             else:
                                 final_img = original_img
-                                caption_text = f"精選第 {orig_idx+1} 張 (原圖尺寸)"
+                                caption_text = f"🏆 建議擺在第 {display_order} 張 (原圖尺寸)"
                             img_cols[col_idx % 2].image(final_img, use_container_width=True, caption=caption_text)
                 
-                # 2. 雙平台貼文文案區塊 (不隸屬於 match 內，確保無標籤時依然可渲染文字)
+                # 2. 雙平台貼文文案精準拆解
                 fb_match = re.search(r'\[FB_POST\](.*?)\[/FB_POST\]', response_text, re.DOTALL)
                 ig_match = re.search(r'\[IG_POST\](.*?)\[/IG_POST\]', response_text, re.DOTALL)
                 sug_match = re.search(r'\[SUGGESTION\](.*?)\[/SUGGESTION\]', response_text, re.DOTALL)
@@ -253,15 +256,15 @@ if generate_btn:
                 
                 st.markdown("---")
                 st.markdown("### 📘 Facebook 貼文文案")
-                st.text_area("FB 專用格式（已加上互動目標）", value=fb_text, height=200, key="fb_area")
+                st.text_area("FB 專用格式（已自動整合標籤）", value=fb_text, height=250, key="fb_area")
                 
                 st.markdown("### 📸 Instagram 貼文文案")
-                st.text_area("IG 專用格式（豐富表情與排版）", value=ig_text, height=200, key="ig_area")
+                st.text_area("IG 專用格式（豐富表情與精準排版）", value=ig_text, height=250, key="ig_area")
                 
                 st.markdown("### 💡 AI 小編挑圖建議")
                 st.info(sug_text)
                 
-                with st.expander("🔍 檢視 AI 原始完整回應 (除錯用)"):
+                with st.expander("🔍 檢視 AI 原始完整回應 (除錯與備份用)"):
                     st.text(response_text)
 
             except Exception as e:
