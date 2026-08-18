@@ -1,8 +1,9 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器 - 最終完全體正式版
-# Current Version: v3.0.0 (2026.07.02 Build)
-# 
+# Current Version: v3.1.0 (2026.08.18 Build)
+#
 # 📄 變更日誌 (Changelog):
+# [2026.08.18] v3.1.0 - 升級主力 AI 引擎為 gemini-2.5-flash / gemini-2.0-flash，提升多圖分析深度與文案質感。
 # [2026.07.02] v3.0.0 - 重新校正跨平台規則落差，全面升級 2026 官方模型標準通道。
 #                      1. 依指示移出影片模式，專注優化多張照片分析。
 #                      2. 增加照片選用原則說明、照片成功接收狀態通知。
@@ -10,91 +11,111 @@
 #                      4. 畫面渲染優化：在每張嚴選照片下方直接顯示 AI 建議的擺放順序。
 # =========================================================================
 
+import base64
+import os
+import re
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image, ImageFilter, ImageOps
-import os
-import base64
-import re
 
 # =========================================================================
 # 🔑 安全機制：Streamlit 隱私保險箱自動載入區
 # =========================================================================
-EMBEDDED_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+EMBEDDED_API_KEY = st.secrets.get(
+    "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")
+)
+
 
 # --- 🛠️ 影像處理核心：防裁切模糊填補 ---
-def add_blur_padding(img, target_ratio=4/5):
-    img = img.convert("RGB")
-    img_w, img_h = img.size
-    img_ratio = img_w / img_h
-    if abs(img_ratio - target_ratio) < 0.01: return img
-    if img_ratio > target_ratio:
-        target_w = img_w
-        target_h = int(img_w / target_ratio)
-    else:
-        target_h = img_h
-        target_w = int(img_h * target_ratio)
-    bg = ImageOps.fit(img, (target_w, target_h), method=Image.Resampling.LANCZOS)
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
-    offset_x = (target_w - img_w) // 2
-    offset_y = (target_h - img_h) // 2
-    bg.paste(img, (offset_x, offset_y))
-    return bg
+def add_blur_padding(img, target_ratio=4 / 5):
+  img = img.convert("RGB")
+  img_w, img_h = img.size
+  img_ratio = img_w / img_h
+  if abs(img_ratio - target_ratio) < 0.01:
+    return img
+  if img_ratio > target_ratio:
+    target_w = img_w
+    target_h = int(img_w / target_ratio)
+  else:
+    target_h = img_h
+    target_w = int(img_h * target_ratio)
+  bg = ImageOps.fit(img, (target_w, target_h), method=Image.Resampling.LANCZOS)
+  bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
+  offset_x = (target_w - img_w) // 2
+  offset_y = (target_h - img_h) // 2
+  bg.paste(img, (offset_x, offset_y))
+  return bg
+
 
 # --- API 專用：限制最大邊長以節省傳輸頻寬與防超時 ---
 def resize_image_for_api(img, max_size=1024):
-    try:
-        img_w, img_h = img.size
-        if img_w <= max_size and img_h <= max_size:
-            return img
-        if img_w > img_h:
-            new_w = max_size
-            new_h = int(img_h * (max_size / img_w))
-        else:
-            new_h = max_size
-            new_w = int(img_w * (max_size / img_h))
-        return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    except Exception:
-        return img
+  try:
+    img_w, img_h = img.size
+    if img_w <= max_size and img_h <= max_size:
+      return img
+    if img_w > img_h:
+      new_w = max_size
+      new_h = int(img_h * (max_size / img_w))
+    else:
+      new_h = max_size
+      new_w = int(img_w * (max_size / img_h))
+    return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+  except Exception:
+    return img
+
 
 # --- 頁面設定 ---
 if os.path.exists("logo.png"):
-    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon=Image.open("logo.png"), layout="wide")
+  st.set_page_config(
+      page_title="小鳥幼兒園貼文神器",
+      page_icon=Image.open("logo.png"),
+      layout="wide",
+  )
 else:
-    st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
+  st.set_page_config(
+      page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide"
+  )
 
 if "reset_counter" not in st.session_state:
-    st.session_state.reset_counter = 0
+  st.session_state.reset_counter = 0
 
 # --- 標題與 Logo 區 ---
 if os.path.exists("logo.png"):
-    try:
-        with open("logo.png", "rb") as f:
-            encoded_img = base64.b64encode(f.read()).decode()
-        header_html = f"""
+  try:
+    with open("logo.png", "rb") as f:
+      encoded_img = base64.b64encode(f.read()).decode()
+    header_html = f"""
         <div style="display: flex; align-items: center; gap: 15px; margin-top: 10px; margin-bottom: 20px;">
             <img src="data:image/png;base64,{encoded_img}" style="width: 60px; height: 60px; object-fit: contain; flex-shrink: 0;">
             <h2 style="margin: 0; font-weight: bold; line-height: 1.3; font-size: 22px;">小鳥幼兒園專屬：AI 社群發文系統</h2>
         </div>
         """
-        st.markdown(header_html, unsafe_allow_html=True)
-    except Exception:
-        st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
-else:
+    st.markdown(header_html, unsafe_allow_html=True)
+  except Exception:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
+else:
+  st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 
-st.markdown("上傳活動照片，設定風格，一鍵智能嚴選並產出雙平台精美文案。")
+st.markdown(
+    "上傳活動照片，設定風格，一鍵智能嚴選並產出雙平台精美文案。"
+)
 
 # --- ⚙️ 步驟 1：系統驗證 ---
 st.markdown("---")
 st.subheader("⚙️ 步驟 1：系統驗證")
-api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password", value=EMBEDDED_API_KEY)
+api_key = st.text_input(
+    "🔑 請貼上您的 Google Gemini API Key",
+    type="password",
+    value=EMBEDDED_API_KEY,
+)
 
 if not api_key:
-    st.warning("請先輸入金鑰以解鎖 AI 功能。")
+  st.warning("請先輸入金鑰以解鎖 AI 功能。")
 else:
-    if EMBEDDED_API_KEY:
-        st.success("✅ 已自動由雲端安全保險箱（Secrets）載入您綁定的 API 金鑰！")
+  if EMBEDDED_API_KEY:
+    st.success(
+        "✅ 已自動由雲端安全保險箱（Secrets）載入您綁定的 API 金鑰！"
+    )
 
 # --- 📝 步驟 2：活動資訊與貼文定調 ---
 st.markdown("---")
@@ -102,52 +123,119 @@ st.subheader("📝 步驟 2：活動資訊與貼文定調")
 col1, col2 = st.columns(2)
 
 with col1:
-    keywords = st.text_area("🔑 活動關鍵字 / 描述", placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...", key=f"keywords_{st.session_state.reset_counter}")
-    post_type = st.radio("📌 貼文類型", ["日常紀錄", "節慶活動", "主題教學", "藝術活動", "幼兒科學", "體能/戶外", "園所公告"], horizontal=True, key=f"post_type_{st.session_state.reset_counter}")
-    perspective = st.radio("👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True, key=f"perspective_{st.session_state.reset_counter}")
-    text_length = st.radio("⚡ 文字長度", ["一句話入魂 (極度精簡)", "微故事 (輕量精簡版)", "情境對話 (還原現場童言童語)"], horizontal=True, key=f"text_length_{st.session_state.reset_counter}")
+  keywords = st.text_area(
+      "🔑 活動關鍵字 / 描述",
+      placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...",
+      key=f"keywords_{st.session_state.reset_counter}",
+  )
+  post_type = st.radio(
+      "📌 貼文類型",
+      [
+          "日常紀錄",
+          "節慶活動",
+          "主題教學",
+          "藝術活動",
+          "幼兒科學",
+          "體能/戶外",
+          "園所公告",
+      ],
+      horizontal=True,
+      key=f"post_type_{st.session_state.reset_counter}",
+  )
+  perspective = st.radio(
+      "👁️ 敘事視角",
+      ["老師視角", "孩子視角", "旁觀者視角"],
+      horizontal=True,
+      key=f"perspective_{st.session_state.reset_counter}",
+  )
+  text_length = st.radio(
+      "⚡ 文字長度",
+      [
+          "一句話入魂 (極度精簡)",
+          "微故事 (輕量精簡版)",
+          "情境對話 (還原現場童言童語)",
+      ],
+      horizontal=True,
+      key=f"text_length_{st.session_state.reset_counter}",
+  )
 
 with col2:
-    tone = st.multiselect("🎨 語氣與氛圍 (可複選)", ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"], default=["溫馨親切"], key=f"tone_{st.session_state.reset_counter}")
-    edu = st.multiselect("💡 教育理念 (可複選)", ["日常生活體驗", "生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"], key=f"edu_{st.session_state.reset_counter}")
-    cta = st.multiselect("🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"], key=f"cta_{st.session_state.reset_counter}")
+  tone = st.multiselect(
+      "🎨 語氣與氛圍 (可複選)",
+      ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"],
+      default=["溫馨親切"],
+      key=f"tone_{st.session_state.reset_counter}",
+  )
+  edu = st.multiselect(
+      "💡 教育理念 (可複選)",
+      [
+          "日常生活體驗",
+          "生活自理",
+          "邏輯與專注力",
+          "人際與分享",
+          "感覺統合與大肌肉",
+          "美感與創造力",
+      ],
+      key=f"edu_{st.session_state.reset_counter}",
+  )
+  cta = st.multiselect(
+      "🎯 互動目標 (可複選)",
+      ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"],
+      key=f"cta_{st.session_state.reset_counter}",
+  )
 
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
 
-enable_blur = st.toggle("✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)", value=True, key=f"blur_{st.session_state.reset_counter}")
-uploaded_files = st.file_uploader("請拖曳或從手機相簿選擇多張照片 (數量無上限)", type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key=f"files_{st.session_state.reset_counter}")
+enable_blur = st.toggle(
+    "✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)",
+    value=True,
+    key=f"blur_{st.session_state.reset_counter}",
+)
+uploaded_files = st.file_uploader(
+    "請拖曳或從手機相簿選擇多張照片 (數量無上限)",
+    type=["png", "jpg", "jpeg", "webp"],
+    accept_multiple_files=True,
+    key=f"files_{st.session_state.reset_counter}",
+)
 
-# 🌟 狀態通知：當照片成功匯入時，即時在網頁給予反饋
 if uploaded_files:
-    st.success(f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI 為您依據多樣性原則精選最佳畫面。")
+  st.success(
+      f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI"
+      " 為您依據多樣性原則精選最佳畫面。"
+  )
 
 # --- 🚀 執行與操作按鈕區 ---
 st.markdown("---")
 btn_col1, btn_col2 = st.columns([3, 1])
 
 with btn_col1:
-    generate_btn = st.button("✨ 步驟 4：一鍵分析並產出社群貼文", use_container_width=True, type="primary")
+  generate_btn = st.button(
+      "✨ 步驟 4：一鍵分析並產出社群貼文",
+      use_container_width=True,
+      type="primary",
+  )
 
 with btn_col2:
-    if st.button("🔄 一鍵清空 / 開始下一篇", use_container_width=True):
-        st.session_state.reset_counter += 1
-        st.rerun()
+  if st.button("🔄 一鍵清空 / 開始下一篇", use_container_width=True):
+    st.session_state.reset_counter += 1
+    st.rerun()
 
-# --- 🧠 AI 核心運作邏輯 (2026年最新穩定版通道) ---
+# --- 🧠 AI 核心運作邏輯 (2026 最新旗艦引擎版) ---
 if generate_btn:
-    if not api_key:
-        st.error("請先在最上方輸入 Gemini API Key！")
-    elif not uploaded_files:
-        st.error("請至少上傳一張照片！")
-    else:
-        with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
-            try:
-                # 使用標準 REST 協定配置
-                genai.configure(api_key=api_key, transport="rest")
-                
-                prompt_text = f"""
+  if not api_key:
+    st.error("請先在最上方輸入 Gemini API Key！")
+  elif not uploaded_files:
+    st.error("請至少上傳一張照片！")
+  else:
+    with st.spinner(
+        "系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."
+    ):
+      try:
+        genai.configure(api_key=api_key, transport="rest")
+
+        prompt_text = f"""
                 你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
                 我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
                 
@@ -182,90 +270,134 @@ if generate_btn:
                 這裡放 IG 挑圖建議（簡述這個照片組合最亮眼、最能打動家長的是哪一個畫面或瞬間）
                 [/SUGGESTION]
                 """
-                
-                # 預備快取圖片並等比例壓縮，防範 REST 超時
-                opened_images = []
-                api_images = []
-                for file in uploaded_files:
-                    file.seek(0)
-                    img = Image.open(file)
-                    opened_images.append(img)
-                    api_images.append(resize_image_for_api(img, max_size=1024))
-                
-                contents = [prompt_text] + api_images
-                
-                # 2026 最新官方穩定模型群防禦鏈
-                fallback_models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"]
-                response_text = None
-                status_text = st.empty()
-                last_error = None
-                
-                for idx, current_model in enumerate(fallback_models):
-                    try:
-                        if idx > 0:
-                            status_text.warning(f"🔄 正在為您自動嘗試備用模型: {current_model}...")
-                        model = genai.GenerativeModel(current_model)
-                        response = model.generate_content(contents, request_options={"timeout": 60})
-                        response_text = response.text
-                        status_text.empty()
-                        break
-                    except Exception as e:
-                        last_error = e
-                        continue
-                            
-                if not response_text:
-                    raise Exception(f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}")
 
-                # --- 🎨 畫面渲染產出結果 ---
-                st.success(f"🎉 文案與分析皆已順利產出！")
-                
-                # 1. 嚴選照片區塊與排序直顯
-                match = re.search(r'\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]', response_text, re.DOTALL)
-                if match:
-                    st.markdown("### 🏆 AI 嚴選最佳照片")
-                    st.info("💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇 **「儲存影像」** 即可！")
-                    
-                    raw_indices = match.group(1).split(',')
-                    selected_files = []
-                    for order_idx, idx_str in enumerate(raw_indices):
-                        idx_str = idx_str.strip()
-                        if idx_str.isdigit():
-                            idx = int(idx_str) - 1
-                            if 0 <= idx < len(opened_images):
-                                selected_files.append((order_idx + 1, opened_images[idx]))
-                    
-                    if selected_files:
-                        img_cols = st.columns(2)
-                        for col_idx, (display_order, original_img) in enumerate(selected_files):
-                            if enable_blur:
-                                final_img = add_blur_padding(original_img)
-                                caption_text = f"🏆 建議擺在第 {display_order} 張 (已防裁切處理)"
-                            else:
-                                final_img = original_img
-                                caption_text = f"🏆 建議擺在第 {display_order} 張 (原圖尺寸)"
-                            img_cols[col_idx % 2].image(final_img, use_container_width=True, caption=caption_text)
-                
-                # 2. 雙平台貼文文案精準拆解
-                fb_match = re.search(r'\[FB_POST\](.*?)\[/FB_POST\]', response_text, re.DOTALL)
-                ig_match = re.search(r'\[IG_POST\](.*?)\[/IG_POST\]', response_text, re.DOTALL)
-                sug_match = re.search(r'\[SUGGESTION\](.*?)\[/SUGGESTION\]', response_text, re.DOTALL)
-                
-                fb_text = fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
-                ig_text = ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
-                sug_text = sug_match.group(1).strip() if sug_match else "無提供建議"
-                
-                st.markdown("---")
-                st.markdown("### 📘 Facebook 貼文文案")
-                st.text_area("FB 專用格式（已自動整合標籤）", value=fb_text, height=250, key="fb_area")
-                
-                st.markdown("### 📸 Instagram 貼文文案")
-                st.text_area("IG 專用格式（豐富表情與精準排版）", value=ig_text, height=250, key="ig_area")
-                
-                st.markdown("### 💡 AI 小編挑圖建議")
-                st.info(sug_text)
-                
-                with st.expander("🔍 檢視 AI 原始完整回應 (除錯與備份用)"):
-                    st.text(response_text)
+        opened_images = []
+        api_images = []
+        for file in uploaded_files:
+          file.seek(0)
+          img = Image.open(file)
+          opened_images.append(img)
+          api_images.append(resize_image_for_api(img, max_size=1024))
 
-            except Exception as e:
-                st.error(f"系統偵測到錯誤：{e}")
+        contents = [prompt_text] + api_images
+
+        # 🌟 2026 旗艦引擎優先防禦鏈
+        fallback_models = [
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash",
+        ]
+        response_text = None
+        status_text = st.empty()
+        last_error = None
+
+        for idx, current_model in enumerate(fallback_models):
+          try:
+            if idx > 0:
+              status_text.warning(
+                  f"🔄 正在為您自動嘗試備用模型: {current_model}..."
+              )
+            model = genai.GenerativeModel(current_model)
+            response = model.generate_content(
+                contents, request_options={"timeout": 60}
+            )
+            response_text = response.text
+            status_text.empty()
+            break
+          except Exception as e:
+            last_error = e
+            continue
+
+        if not response_text:
+          raise Exception(
+              f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}"
+          )
+
+        st.success("🎉 文案與分析皆已順利產出！")
+
+        # 1. 嚴選照片區塊與排序直顯
+        match = re.search(
+            r"\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]",
+            response_text,
+            re.DOTALL,
+        )
+        if match:
+          st.markdown("### 🏆 AI 嚴選最佳照片")
+          st.info(
+              "💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇"
+              " **「儲存影像」** 即可！"
+          )
+
+          raw_indices = match.group(1).split(",")
+          selected_files = []
+          for order_idx, idx_str in enumerate(raw_indices):
+            idx_str = idx_str.strip()
+            if idx_str.isdigit():
+              idx = int(idx_str) - 1
+              if 0 <= idx < len(opened_images):
+                selected_files.append((order_idx + 1, opened_images[idx]))
+
+          if selected_files:
+            img_cols = st.columns(2)
+            for col_idx, (display_order, original_img) in enumerate(
+                selected_files
+            ):
+              if enable_blur:
+                final_img = add_blur_padding(original_img)
+                caption_text = (
+                    f"🏆 建議擺在第 {display_order} 張 (已防裁切處理)"
+                )
+              else:
+                final_img = original_img
+                caption_text = f"🏆 建議擺在第 {display_order} 張 (原圖尺寸)"
+              img_cols[col_idx % 2].image(
+                  final_img, use_container_width=True, caption=caption_text
+              )
+
+        # 2. 雙平台貼文文案精準拆解
+        fb_match = re.search(
+            r"\[FB_POST\](.*?)\[/FB_POST\]", response_text, re.DOTALL
+        )
+        ig_match = re.search(
+            r"\[IG_POST\](.*?)\[/IG_POST\]", response_text, re.DOTALL
+        )
+        sug_match = re.search(
+            r"\[SUGGESTION\](.*?)\[/SUGGESTION\]", response_text, re.DOTALL
+        )
+
+        fb_text = (
+            fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
+        )
+        ig_text = (
+            ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
+        )
+        sug_text = (
+            sug_match.group(1).strip() if sug_match else "無提供建議"
+        )
+
+        st.markdown("---")
+        st.markdown("### 📘 Facebook 貼文文案")
+        st.text_area(
+            "FB 專用格式（已自動整合標籤）",
+            value=fb_text,
+            height=250,
+            key="fb_area",
+        )
+
+        st.markdown("### 📸 Instagram 貼文文案")
+        st.text_area(
+            "IG 專用格式（豐富表情與精準排版）",
+            value=ig_text,
+            height=250,
+            key="ig_area",
+        )
+
+        st.markdown("### 💡 AI 小編挑圖建議")
+        st.info(sug_text)
+
+        with st.expander("🔍 檢視 AI 原始完整回應 (除錯與備份用)"):
+          st.text(response_text)
+
+      except Exception as e:
+        st.error(f"系統偵測到錯誤：{e}")
