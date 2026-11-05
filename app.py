@@ -1,8 +1,12 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器 - 最終完全體正式版
-# Current Version: v3.1.0 (2026.08.18 Build)
+# Current Version: v3.2.0 (2026.11.05 Build)
 #
 # 📄 變更日誌 (Changelog):
+# [2026.11.05] v3.2.0 - 記憶體效能大優化 (徹底根治 Linux OOM 伺服器崩潰)：
+#                      1. 改用延遲加載 (Lazy Loading)：未入選照片不常駐記憶體，僅精準解碼入選的 10 張。
+#                      2. 引入 gc 垃圾回收機制，在 API 請求完畢與圖檔渲染後手動釋放大型變數。
+#                      3. 加入渲染圖上限 (1600px)，防止超高解析度照片在高斯模糊補邊時吃滿 RAM。
 # [2026.08.18] v3.1.0 - 升級主力 AI 引擎為 gemini-2.5-flash / gemini-2.0-flash，提升多圖分析深度與文案質感。
 # [2026.07.02] v3.0.0 - 重新校正跨平台規則落差，全面升級 2026 官方模型標準通道。
 #                      1. 依指示移出影片模式，專注優化多張照片分析。
@@ -12,6 +16,7 @@
 # =========================================================================
 
 import base64
+import gc
 import os
 import re
 import streamlit as st
@@ -222,7 +227,7 @@ with btn_col2:
     st.session_state.reset_counter += 1
     st.rerun()
 
-# --- 🧠 AI 核心運作邏輯 (2026 最新旗艦引擎版) ---
+# --- 🧠 AI 核心運作邏輯 (2026 最新低記憶體優化版) ---
 if generate_btn:
   if not api_key:
     st.error("請先在最上方輸入 Gemini API Key！")
@@ -271,17 +276,16 @@ if generate_btn:
                 [/SUGGESTION]
                 """
 
-        opened_images = []
+        # 僅壓縮準備傳輸給 API 的圖片，不提前保留全解析度圖檔
         api_images = []
         for file in uploaded_files:
           file.seek(0)
-          img = Image.open(file)
-          opened_images.append(img)
-          api_images.append(resize_image_for_api(img, max_size=1024))
+          with Image.open(file) as raw_img:
+            api_images.append(resize_image_for_api(raw_img, max_size=1024))
 
         contents = [prompt_text] + api_images
 
-        # 🌟 2026 旗艦引擎優先防禦鏈
+        # 2026 旗艦引擎優先防禦鏈
         fallback_models = [
             "gemini-2.5-flash",
             "gemini-2.0-flash",
@@ -309,6 +313,11 @@ if generate_btn:
             last_error = e
             continue
 
+        # 傳輸完成後立即清除 API 圖片陣列並回收記憶體
+        del contents
+        del api_images
+        gc.collect()
+
         if not response_text:
           raise Exception(
               f"所有備用模型均嘗試失敗。最後一個錯誤訊息：{last_error}"
@@ -316,7 +325,7 @@ if generate_btn:
 
         st.success("🎉 文案與分析皆已順利產出！")
 
-        # 1. 嚴選照片區塊與排序直顯
+        # 1. 嚴選照片區塊（延遲加載：僅讀取被選中的照片）
         match = re.search(
             r"\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]",
             response_text,
@@ -335,8 +344,13 @@ if generate_btn:
             idx_str = idx_str.strip()
             if idx_str.isdigit():
               idx = int(idx_str) - 1
-              if 0 <= idx < len(opened_images):
-                selected_files.append((order_idx + 1, opened_images[idx]))
+              if 0 <= idx < len(uploaded_files):
+                # 僅載入被挑中的照片，並將最大尺寸限制在 1600px 內避免高斯模糊吃滿 RAM
+                target_file = uploaded_files[idx]
+                target_file.seek(0)
+                loaded_img = Image.open(target_file).convert("RGB")
+                loaded_img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+                selected_files.append((order_idx + 1, loaded_img))
 
           if selected_files:
             img_cols = st.columns(2)
@@ -354,6 +368,10 @@ if generate_btn:
               img_cols[col_idx % 2].image(
                   final_img, use_container_width=True, caption=caption_text
               )
+
+            # 畫面渲染完畢後，釋放點陣圖並主動回收
+            del selected_files
+            gc.collect()
 
         # 2. 雙平台貼文文案精準拆解
         fb_match = re.search(
