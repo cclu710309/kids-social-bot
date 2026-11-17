@@ -1,5 +1,7 @@
-# 小鳥幼兒園貼文神器 v3.3.0 (2026.11.17)｜🟣 Claude 協作版
+# 小鳥幼兒園貼文神器 v4.0.0 (2026.11.17)｜🟣 Claude 協作版
 # v3.3.0 起：舊套件 google-generativeai 已停止支援，改用新版 google-genai
-streamlit>=1.50
+streamlit>=1.67
 google-genai>=1.0
 pillow>=10.0
+pydantic>=2.0
+requests>=2.28
