@@ -1,23 +1,24 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器
-# Current Version: v3.3.0 (2026.11.17 Build)｜🟣 Claude 協作版
+# Current Version: v4.0.0 (2026.11.17 Build)｜🟣 Claude 協作版
 #
 # 🧬 開發歷程 (AI 協作夥伴):
 #   ├─ v3.0.0 ~ v3.2.0 ── 🔵 Google Gemini 協作開發
-#   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發 (程式全面健檢後接手)
+#   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發
 #
 # 📄 變更日誌 (Changelog):
-# [2026.11.17] v3.3.0 🟣Claude - 穩定性修復版（健檢後首次進版）：
-#                      1. 修正致命 Bug：小於 1024px 的照片（LINE 轉存圖、截圖）會在送出前被關閉，
-#                         導致整次產文失敗並誤報「所有備用模型均失敗」。
-#                      2. 更新模型防禦鏈：移除已關閉的 gemini-1.5 / 2.0 系列，改為 Gemini 3.x 世代；
-#                         並可由 Secrets 的 GEMINI_MODELS 自行調整，未來換模型不必改程式。
-#                      3. 遷移 SDK：google-generativeai（已於 2025.11.30 終止支援）→ google-genai。
-#                      4. 金鑰防外洩：Secrets 已綁定金鑰時不再放入網頁輸入框（舊版可被開發者工具看到）。
-#                      5. 新增「園所通行密碼」入口：在 Secrets 設定 APP_PASSWORD 後，外人無法使用。
-#                      6. 智慧錯誤判斷：金鑰錯誤直接提示，不再白白輪詢所有模型。
-#                      7. 手機照片自動轉正 (EXIF)，並以 JPEG 草稿解碼降低記憶體高峰（延續 OOM 優化）。
-#                      8. AI 挑圖結果自動去重複、上限 10 張。
+# [2026.11.17] v4.0.0 🟣Claude - 全面升級版（逐項討論定案後一次完成）：
+#   🧱 基礎：結果存入 session_state（按任何按鈕都不會消失）；AI 改用 JSON 結構化輸出；
+#           第一次分析同時產生「照片內容摘要」。
+#   📸 照片：統一輸出 1080×1350；園所 Logo 浮水印（右下、原色 80%、寬 12%，優先放在模糊區）；
+#           📦 ZIP 打包下載（電腦）；📲 一次存到手機相簿（手機，試做）。
+#   ✍️ 文案：複製框＋「✏️ 我要修改」開關；字數改為「模式決定風格、平台決定長短」；
+#           IG/FB 共用 hashtag 最多 5 個（必含 #小鳥幼兒園 #everythingforkids，程式把關）；
+#           補齊五大教學特色、台中在地語感與品牌調性。
+#   🔁 再給我一版：可只重寫 IG / FB / 兩者；依照片摘要快速重寫；修改方向輸入框；保留最多 5 版。
+#   🗂️ 發文歷史：Google 試算表；「✅ 採用這版」才記錄；只存文字不存照片；
+#           顯示最近 10 篇，AI 自動參考避免重複。
+# [2026.11.17] v3.3.0 🟣Claude - 穩定性修復：小圖致命 Bug、模型鏈換代、SDK 遷移、金鑰防外洩、通行密碼。
 # [2026.11.05] v3.2.0 🔵Gemini - 記憶體效能大優化 (Linux OOM)：延遲加載、gc 回收、渲染圖上限 1600px。
 # [2026.08.18] v3.1.0 🔵Gemini - 主力 AI 引擎升級為 gemini-2.5-flash / gemini-2.0-flash。
 # [2026.07.02] v3.0.0 🔵Gemini - 移出影片模式、多樣性挑圖原則、10 張上限、排序直顯。
@@ -26,32 +27,69 @@
 import base64
 import gc
 import hmac
+import io
+import json
 import os
 import re
+import uuid
+import zipfile
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+import requests
 import streamlit as st
 from google import genai
-from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from PIL import Image, ImageFilter, ImageOps
+from pydantic import BaseModel
 
-APP_VERSION = "v3.3.0"
+APP_VERSION = "v4.0.0"
 MAX_SELECTED = 10
+MAX_VERSIONS = 5
+MAX_HASHTAGS = 5
+BRAND_TAGS = ["#小鳥幼兒園", "#everythingforkids"]
+OUT_W, OUT_H = 1080, 1350  # IG 直式 4:5 標準尺寸
+TZ = ZoneInfo("Asia/Taipei")
 
 # 模型防禦鏈（由上而下依序嘗試）。可在 Streamlit Secrets 以 GEMINI_MODELS="a,b,c" 覆寫。
 DEFAULT_MODELS = [
-    "gemini-3.5-flash",       # 主力：穩定版 (GA)
-    "gemini-3.6-flash",       # 次選：較新世代
-    "gemini-3.1-flash-lite",  # 省錢備援：速度快、費用低
-    "gemini-2.5-flash",       # 舊主力：已排入退役，仍可用時作為最後防線
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
 ]
 
+# 字數規則：模式決定風格、平台決定長短
+LENGTH_RULES = {
+    "一句話入魂 (極度精簡)": {
+        "ig": "30～60 字",
+        "fb": "60～100 字",
+        "style": "能用一個詞解決就不用一句話，能用一句話解決就絕對不寫一段話；洗鍊、直擊人心，請勿硬湊字數",
+    },
+    "微故事 (輕量精簡版)": {
+        "ig": "80～120 字",
+        "fb": "150～250 字",
+        "style": "以小故事敘事，最多拆成 2～3 個極短段落",
+    },
+    "情境對話 (還原現場童言童語)": {
+        "ig": "150 字以內",
+        "fb": "250 字以內",
+        "style": "以引號重現現場童言童語的對話，再用一兩句收尾",
+    },
+}
+
+BRAND_CONTEXT = """你是小鳥幼兒園的專業社群小編。
+【園所資料】小鳥幼兒園，位於台中市西區，招收 2–6 歲幼兒，品牌精神 everythingforkids。
+【五大教學特色】自然探索、藝術創作、生活自理、品格教育、主題教學。
+【品牌調性】精緻用心、高質感。讀者是台中在地 2–6 歲幼兒的家長，請用貼近台中在地家長的語感。
+【文字原則】精簡有力，能一句話說完不說一段，能一個詞說完不說一句；不堆疊形容詞、不說套話；
+自然帶入 everythingforkids（一切為了孩子）的精神，但不必每次都直接寫出這個字。"""
+
 
 # =========================================================================
-# 🔑 安全機制：Streamlit 隱私保險箱自動載入區
+# 🔑 Secrets 讀取
 # =========================================================================
 def get_secret(name, default=""):
-  """安全讀取 Secrets；本機沒有 secrets.toml 時不會當機。"""
   try:
     value = st.secrets.get(name, None)
   except Exception:
@@ -63,6 +101,8 @@ def get_secret(name, default=""):
 
 EMBEDDED_API_KEY = get_secret("GEMINI_API_KEY")
 APP_PASSWORD = get_secret("APP_PASSWORD")
+HISTORY_URL = get_secret("HISTORY_URL")
+HISTORY_TOKEN = get_secret("HISTORY_TOKEN")
 _custom_models = get_secret("GEMINI_MODELS")
 FALLBACK_MODELS = (
     [m.strip() for m in _custom_models.split(",") if m.strip()]
@@ -71,21 +111,35 @@ FALLBACK_MODELS = (
 )
 
 
-# --- 🛠️ 影像讀取核心：轉正 + 低記憶體解碼 + 完整載入 ---
-def load_image(file, max_size):
-  """讀取上傳照片並縮到 max_size 以內。
+# =========================================================================
+# 🧾 AI 回傳格式（JSON 結構化輸出）
+# =========================================================================
+class AnalysisResult(BaseModel):
+  selected_images: list[int]
+  photo_summary: str
+  ig_text: str
+  fb_text: str
+  content_hashtags: list[str]
+  suggestion: str
 
-  v3.3.0 修正：舊版小圖會直接回傳「已關閉」的圖片物件而導致失敗。
-  這裡一律在 with 區塊內產生一份完整載入的新圖片再回傳。
-  """
+
+class RewriteResult(BaseModel):
+  ig_text: str
+  fb_text: str
+  content_hashtags: list[str]
+
+
+# =========================================================================
+# 🛠️ 影像處理
+# =========================================================================
+def load_image(file, max_size):
+  """讀取上傳照片：自動轉正、低記憶體解碼、縮到 max_size 以內。"""
   file.seek(0)
   with Image.open(file) as im:
-    # JPEG 專用：解碼時直接以較小尺寸讀入，大幅降低記憶體高峰
     try:
       im.draft("RGB", (max_size, max_size))
     except Exception:
       pass
-    # 依手機 EXIF 方向資訊自動轉正（回傳的是已載入的新圖片）
     img = ImageOps.exif_transpose(im)
   if img.mode != "RGB":
     img = img.convert("RGB")
@@ -93,30 +147,234 @@ def load_image(file, max_size):
   return img
 
 
-# --- 🛠️ 影像處理核心：防裁切模糊填補 ---
-def add_blur_padding(img, target_ratio=4 / 5):
-  img = img.convert("RGB")
-  img_w, img_h = img.size
-  img_ratio = img_w / img_h
-  if abs(img_ratio - target_ratio) < 0.01:
-    return img
-  if img_ratio > target_ratio:
-    target_w = img_w
-    target_h = int(img_w / target_ratio)
+@st.cache_resource
+def load_logo():
+  if not os.path.exists("logo.png"):
+    return None
+  try:
+    logo = Image.open("logo.png").convert("RGBA")
+    alpha = logo.getchannel("A").point(lambda a: int(a * 0.8))  # 80% 不透明
+    logo.putalpha(alpha)
+    return logo
+  except Exception:
+    return None
+
+
+def compose_post_image(img, blur):
+  """回傳 (畫布, 照片所在區域)。模糊模式統一輸出 1080×1350。"""
+  w, h = img.size
+  if blur:
+    if abs(w / h - OUT_W / OUT_H) < 0.01:
+      return img.resize((OUT_W, OUT_H), Image.Resampling.LANCZOS), (0, 0, OUT_W, OUT_H)
+    bg = ImageOps.fit(img, (OUT_W, OUT_H), method=Image.Resampling.LANCZOS)
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
+    scale = min(OUT_W / w, OUT_H / h)
+    nw, nh = int(w * scale), int(h * scale)
+    fg = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    ox, oy = (OUT_W - nw) // 2, (OUT_H - nh) // 2
+    bg.paste(fg, (ox, oy))
+    return bg, (ox, oy, ox + nw, oy + nh)
+  # 原圖比例：寬度統一縮到 1080（小圖不放大）
+  if w > OUT_W:
+    img = img.resize((OUT_W, int(h * OUT_W / w)), Image.Resampling.LANCZOS)
+  return img, (0, 0, img.size[0], img.size[1])
+
+
+def add_watermark(canvas, photo_box, logo):
+  """右下角 Logo；若下方或右側有模糊區，優先放在模糊區內。"""
+  W, H = canvas.size
+  ratio = logo.size[1] / logo.size[0]
+  lw = int(W * 0.12)          # 標準寬度：照片寬 12%
+  min_lw = int(W * 0.08)      # 為了塞進模糊區，最多縮到 8%
+  margin = int(W * 0.03)
+  gap = 12
+  bottom_strip = H - photo_box[3]
+  right_strip = W - photo_box[2]
+  fit_bottom = int((bottom_strip - 2 * gap) / ratio) if bottom_strip > 2 * gap else 0
+  fit_right = right_strip - 2 * gap
+  if fit_bottom >= min_lw:
+    lw = min(lw, fit_bottom)
+    lh = int(lw * ratio)
+    x, y = W - lw - margin, photo_box[3] + (bottom_strip - lh) // 2
+  elif fit_right >= min_lw:
+    lw = min(lw, fit_right)
+    lh = int(lw * ratio)
+    x, y = photo_box[2] + (right_strip - lw) // 2, H - lh - margin
   else:
-    target_h = img_h
-    target_w = int(img_h * target_ratio)
-  bg = ImageOps.fit(img, (target_w, target_h), method=Image.Resampling.LANCZOS)
-  bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
-  offset_x = (target_w - img_w) // 2
-  offset_y = (target_h - img_h) // 2
-  bg.paste(img, (offset_x, offset_y))
-  return bg
+    lh = int(lw * ratio)
+    x, y = W - lw - margin, H - lh - margin
+  mark = logo.resize((lw, max(1, lh)), Image.Resampling.LANCZOS)
+  out = canvas.convert("RGBA")
+  out.alpha_composite(mark, (x, y))
+  return out.convert("RGB")
 
 
-# --- 🧠 AI 錯誤分類：哪些錯誤不必再試下一個模型 ---
+def make_final_image(file, blur, watermark):
+  img = load_image(file, max_size=1600)
+  canvas, box = compose_post_image(img, blur)
+  logo = load_logo() if watermark else None
+  if logo is not None:
+    canvas = add_watermark(canvas, box, logo)
+  buf = io.BytesIO()
+  canvas.save(buf, "JPEG", quality=90, optimize=True)
+  del img, canvas
+  return buf.getvalue()
+
+
+def safe_name(text, fallback):
+  name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "", (text or "").strip())
+  name = re.sub(r"\s+", "_", name)[:15]
+  return name or fallback
+
+
+def build_zip(images, activity):
+  buf = io.BytesIO()
+  with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+    for i, data in enumerate(images, start=1):
+      zf.writestr(f"{i:02d}_{activity}.jpg", data)
+  return buf.getvalue()
+
+
+SHARE_TEMPLATE = """
+<div style="margin:4px 0 8px 0;">
+  <button id="btn-__UID__" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid rgba(128,128,128,.4);
+    background:#ff4b4b;color:#fff;font-size:16px;font-weight:600;cursor:pointer;">📲 一次存到手機相簿（__N__ 張）</button>
+  <div id="msg-__UID__" style="font-size:13px;margin-top:6px;opacity:.85;"></div>
+</div>
+<script>
+(function () {
+  const data = __DATA__;
+  const files = data.map(function (d) {
+    const bin = atob(d[1]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new File([arr], d[0], { type: "image/jpeg" });
+  });
+  const btn = document.getElementById("btn-__UID__");
+  const msg = document.getElementById("msg-__UID__");
+  if (!btn) return;
+  btn.addEventListener("click", async function () {
+    if (navigator.canShare && navigator.canShare({ files: files })) {
+      try {
+        await navigator.share({ files: files });
+        msg.textContent = "✅ 已開啟分享選單：iPhone 請選「儲存 __N__ 張影像」，Android 請選存到相簿。";
+      } catch (e) {
+        if (e.name !== "AbortError") msg.textContent = "⚠️ 無法開啟分享（" + e.message + "），請改用下方長按存圖。";
+      }
+    } else {
+      msg.textContent = "ℹ️ 這個裝置或瀏覽器不支援一次儲存，請改用下方長按存圖，或用電腦下載 ZIP。";
+    }
+  });
+})();
+</script>
+"""
+
+
+def share_widget_html(images, activity):
+  data = [
+      [f"{i:02d}_{activity}.jpg", base64.b64encode(b).decode()]
+      for i, b in enumerate(images, start=1)
+  ]
+  return (
+      SHARE_TEMPLATE.replace("__UID__", uuid.uuid4().hex[:8])
+      .replace("__N__", str(len(images)))
+      .replace("__DATA__", json.dumps(data))
+  )
+
+
+# =========================================================================
+# #️⃣ Hashtag 與文案組裝（程式把關：最多 5 個、必含品牌標籤）
+# =========================================================================
+HASHTAG_ONLY_LINE = re.compile(r"^\s*(#[^\s#]+\s*)+$")
+
+
+def build_hashtags(content_tags):
+  result = list(BRAND_TAGS)
+  seen = {t.lower() for t in result}
+  for tag in content_tags or []:
+    clean = re.sub(r"[\s#＃,，。、!！?？]+", "", str(tag))
+    if not clean:
+      continue
+    full = "#" + clean
+    if full.lower() in seen:
+      continue
+    result.append(full)
+    seen.add(full.lower())
+    if len(result) >= MAX_HASHTAGS:
+      break
+  return result
+
+
+def strip_hashtag_lines(text):
+  lines = [l for l in (text or "").strip().splitlines() if not HASHTAG_ONLY_LINE.match(l)]
+  return "\n".join(lines).strip()
+
+
+def compose_post(body, tags):
+  return f"{strip_hashtag_lines(body)}\n\n{' '.join(tags)}"
+
+
+def count_hashtags(text):
+  return len(re.findall(r"#[^\s#]+", text or ""))
+
+
+# =========================================================================
+# 🗂️ 發文歷史（Google 試算表 + Apps Script）
+# =========================================================================
+def history_enabled():
+  return bool(HISTORY_URL and HISTORY_TOKEN)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_history(url, token, n=10):
+  try:
+    r = requests.get(url, params={"token": token, "n": n}, timeout=20)
+    data = r.json()
+    if not data.get("ok"):
+      return None, data.get("error", "未知錯誤")
+    return data.get("rows", []), None
+  except Exception as e:
+    return None, str(e)
+
+
+def save_history(payload):
+  try:
+    body = dict(payload, token=HISTORY_TOKEN)
+    r = requests.post(
+        HISTORY_URL,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        timeout=30,
+    )
+    data = r.json()
+    if data.get("ok"):
+      fetch_history.clear()
+      return True, None
+    return False, data.get("error", "未知錯誤")
+  except Exception as e:
+    return False, str(e)
+
+
+def history_prompt_block(rows):
+  if not rows:
+    return ""
+  lines = []
+  for row in rows[:10]:
+    row = list(row) + [""] * 8
+    date, kw, _ptype, _len, ig, _fb, tags = row[:7]
+    first = re.sub(r"\s+", " ", str(ig))[:40]
+    lines.append(f"- {str(date)[:10]}｜{kw}｜IG 開頭：{first}｜hashtag：{tags}")
+  return (
+      "\n【最近已發布的貼文（請避免重複）】\n"
+      + "\n".join(lines)
+      + "\n請避免重複上述貼文的開頭句型、慣用詞與內容 hashtag（品牌標籤除外），讓每篇都有新鮮感。\n"
+  )
+
+
+# =========================================================================
+# 🧠 AI 呼叫（模型防禦鏈 + JSON）
+# =========================================================================
 def is_fatal_error(e):
-  """金鑰錯誤 / 權限問題：換模型也沒用，直接停止。"""
   code = getattr(e, "code", None)
   msg = str(e).lower()
   if code in (401, 403):
@@ -126,46 +384,154 @@ def is_fatal_error(e):
   return False
 
 
-def parse_selected_indices(raw, total):
-  """解析 AI 回傳的序號：去重複、去越界、最多 10 張。"""
-  result = []
-  for part in re.split(r"[,，\s]+", raw):
-    if part.isdigit():
-      idx = int(part) - 1
-      if 0 <= idx < total and idx not in result:
-        result.append(idx)
-    if len(result) >= MAX_SELECTED:
-      break
-  return result
+def call_gemini(api_key, contents, schema, status=None):
+  client = genai.Client(
+      api_key=api_key, http_options=genai_types.HttpOptions(timeout=90_000)
+  )
+  config = genai_types.GenerateContentConfig(
+      response_mime_type="application/json", response_schema=schema
+  )
+  errors = []
+  for idx, model in enumerate(FALLBACK_MODELS):
+    try:
+      if idx > 0 and status is not None:
+        status.warning(f"🔄 正在為您自動嘗試備用模型: {model}...")
+      resp = client.models.generate_content(
+          model=model, contents=contents, config=config
+      )
+      parsed = getattr(resp, "parsed", None)
+      if isinstance(parsed, BaseModel):
+        data = parsed.model_dump()
+      elif resp.text:
+        data = schema.model_validate_json(resp.text).model_dump()
+      else:
+        errors.append(f"{model}：回傳內容為空")
+        continue
+      if status is not None:
+        status.empty()
+      return data, resp.text or json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+      if is_fatal_error(e):
+        if status is not None:
+          status.empty()
+        raise Exception(
+            "API 金鑰無效或沒有權限，請到 Google AI Studio 確認金鑰是否正確、"
+            f"是否已啟用。（原始訊息：{e}）"
+        )
+      errors.append(f"{model}：{e}")
+  detail = "\n".join(f"• {line}" for line in errors)
+  raise Exception("所有備用模型均嘗試失敗，各模型錯誤如下：\n" + detail)
 
 
-# --- 頁面設定 ---
+def settings_block(s):
+  rule = LENGTH_RULES[s["text_length"]]
+  return f"""
+【本篇設定】
+- 活動關鍵字 / 描述：{s['keywords'] or '（未填寫，請依照片判斷）'}
+- 貼文類型：{s['post_type']}｜敘事視角：{s['perspective']}
+- 語氣：{'、'.join(s['tone']) or '溫馨親切'}｜教育價值：{'、'.join(s['edu']) or '（不指定）'}
+- 互動目標：{'、'.join(s['cta']) or '（無）'}
+
+【文案長度與風格】模式：「{s['text_length']}」——{rule['style']}
+- IG 文案：{rule['ig']}，含適量表情符號。
+- FB 文案：{rule['fb']}，溫馨敘述，適量表情符號。
+
+【撰寫原則】
+1. ig_text、fb_text 只放內文，「不要」寫任何 hashtag（系統會自動加在文末）。
+2. content_hashtags：給 3 個與照片內容相關、台灣在地化的 hashtag（例如活動主題、#台中幼兒園 這類），
+   不要包含 #小鳥幼兒園、#everythingforkids（系統會自動加入）。IG 規定整篇最多 5 個 hashtag。
+3. 互動克制：以自然敘事為主，除非上方有勾選互動目標，否則不要加入「大家覺得呢？」這類要求互動的句子。
+"""
+
+
+def build_analysis_prompt(n_photos, s, history_rows):
+  return f"""{BRAND_CONTEXT}
+{settings_block(s)}{history_prompt_block(history_rows)}
+【任務 1：IG 智能挑圖】目前共上傳 {n_photos} 張照片（第一張序號為 1，以此類推）。
+1. 若總數大於 10 張，必須且只能精選「剛好 10 張」；若小於或等於 10 張，列出全部序號。
+2. 多樣性原則：避免同一個孩子重複出現太多次；畫面要分散（遠景呈現場景、中景呈現互動、特寫呈現專注表情）。
+3. selected_images：依「建議發文順序」排列的照片序號（整數）。
+
+【任務 2：照片內容摘要】photo_summary：用 150～300 字描述入選照片的場景、活動、孩子們在做什麼、
+氣氛與亮點（不要猜測孩子的名字）。之後重寫文案時只會參考這段摘要，請寫得具體。
+
+【任務 3：雙平台文案】依上方設定撰寫 ig_text、fb_text、content_hashtags。
+
+【任務 4：挑圖建議】suggestion：簡述這組照片最亮眼、最能打動家長的畫面或瞬間。
+"""
+
+
+def build_rewrite_prompt(summary, s, current, target, direction, history_rows):
+  target_text = {"both": "IG 與 FB 兩篇", "ig": "IG", "fb": "FB"}[target]
+  return f"""{BRAND_CONTEXT}
+{settings_block(s)}{history_prompt_block(history_rows)}
+【照片內容摘要】
+{summary}
+
+【目前版本】
+IG：{current['ig_body']}
+FB：{current['fb_body']}
+
+【任務】請重寫「{target_text}」文案，寫出跟目前版本明顯不同的新版本（換開頭、換切入角度）。
+修改方向：{direction or '（未指定，請自由發揮出不同的寫法）'}
+仍請完整回傳 ig_text、fb_text、content_hashtags 三個欄位。
+"""
+
+
+# =========================================================================
+# 🧩 版本與狀態
+# =========================================================================
+def full_text(version, platform):
+  edited = version.get(f"{platform}_edit")
+  if edited is not None:
+    return edited
+  return compose_post(version[f"{platform}_body"], version["hashtags"])
+
+
+def on_edit_change(vid, platform):
+  versions = st.session_state.result["versions"]
+  versions[vid][f"{platform}_edit"] = st.session_state[f"edit_{platform}_{vid}"]
+
+
+def snapshot_settings():
+  rc = st.session_state.reset_counter
+  return {
+      "keywords": st.session_state.get(f"keywords_{rc}", ""),
+      "post_type": st.session_state.get(f"post_type_{rc}", "日常紀錄"),
+      "perspective": st.session_state.get(f"perspective_{rc}", "老師視角"),
+      "text_length": st.session_state.get(f"text_length_{rc}", "一句話入魂 (極度精簡)"),
+      "tone": st.session_state.get(f"tone_{rc}", ["溫馨親切"]),
+      "edu": st.session_state.get(f"edu_{rc}", []),
+      "cta": st.session_state.get(f"cta_{rc}", []),
+  }
+
+
+# =========================================================================
+# 🖥️ 頁面
+# =========================================================================
 if os.path.exists("logo.png"):
   st.set_page_config(
-      page_title="小鳥幼兒園貼文神器",
-      page_icon=Image.open("logo.png"),
-      layout="wide",
+      page_title="小鳥幼兒園貼文神器", page_icon=Image.open("logo.png"), layout="wide"
   )
 else:
-  st.set_page_config(
-      page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide"
-  )
+  st.set_page_config(page_title="小鳥幼兒園貼文神器", page_icon="🐦", layout="wide")
 
 if "reset_counter" not in st.session_state:
   st.session_state.reset_counter = 0
 
-# --- 標題與 Logo 區 ---
 if os.path.exists("logo.png"):
   try:
     with open("logo.png", "rb") as f:
       encoded_img = base64.b64encode(f.read()).decode()
-    header_html = f"""
+    st.markdown(
+        f"""
         <div style="display: flex; align-items: center; gap: 15px; margin-top: 10px; margin-bottom: 20px;">
             <img src="data:image/png;base64,{encoded_img}" style="width: 60px; height: 60px; object-fit: contain; flex-shrink: 0;">
             <h2 style="margin: 0; font-weight: bold; line-height: 1.3; font-size: 22px;">小鳥幼兒園專屬：AI 社群發文系統</h2>
         </div>
-        """
-    st.markdown(header_html, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
   except Exception:
     st.title("🐦 小鳥幼兒園專屬：AI 社群發文系統")
 else:
@@ -173,9 +539,7 @@ else:
 
 st.caption(f"版本 {APP_VERSION}｜🟣 Claude 協作版（v3.2.0 以前為 🔵 Gemini 協作）")
 
-# =========================================================================
-# 🔒 園所通行密碼（Secrets 有設定 APP_PASSWORD 才會啟用）
-# =========================================================================
+# 🔒 園所通行密碼
 if APP_PASSWORD and not st.session_state.get("authed", False):
   st.markdown("---")
   st.subheader("🔒 園所內部專用")
@@ -188,304 +552,337 @@ if APP_PASSWORD and not st.session_state.get("authed", False):
       st.error("密碼不正確，請再試一次。")
   st.stop()
 
-st.markdown(
-    "上傳活動照片，設定風格，一鍵智能嚴選並產出雙平台精美文案。"
-)
+st.markdown("上傳活動照片，設定風格，一鍵智能嚴選並產出雙平台精美文案。")
 
 # --- ⚙️ 步驟 1：系統驗證 ---
 st.markdown("---")
 st.subheader("⚙️ 步驟 1：系統驗證")
-
 if EMBEDDED_API_KEY:
-  # v3.3.0：金鑰只留在伺服器端，不再放進網頁輸入框（避免被開發者工具看到）
   api_key = EMBEDDED_API_KEY
   st.success("✅ 已自動由雲端安全保險箱（Secrets）載入您綁定的 API 金鑰！")
 else:
-  api_key = st.text_input(
-      "🔑 請貼上您的 Google Gemini API Key", type="password"
-  )
+  api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
   if not api_key:
     st.warning("請先輸入金鑰以解鎖 AI 功能。")
 
 # --- 📝 步驟 2：活動資訊與貼文定調 ---
 st.markdown("---")
 st.subheader("📝 步驟 2：活動資訊與貼文定調")
+rc = st.session_state.reset_counter
 col1, col2 = st.columns(2)
-
 with col1:
-  keywords = st.text_area(
+  st.text_area(
       "🔑 活動關鍵字 / 描述",
       placeholder="例如：萬聖節、不怕跌倒、中秋吃柚子...",
-      key=f"keywords_{st.session_state.reset_counter}",
+      key=f"keywords_{rc}",
   )
-  post_type = st.radio(
+  st.radio(
       "📌 貼文類型",
-      [
-          "日常紀錄",
-          "節慶活動",
-          "主題教學",
-          "藝術活動",
-          "幼兒科學",
-          "體能/戶外",
-          "園所公告",
-      ],
+      ["日常紀錄", "節慶活動", "主題教學", "藝術活動", "幼兒科學", "體能/戶外", "園所公告"],
       horizontal=True,
-      key=f"post_type_{st.session_state.reset_counter}",
+      key=f"post_type_{rc}",
   )
-  perspective = st.radio(
-      "👁️ 敘事視角",
-      ["老師視角", "孩子視角", "旁觀者視角"],
-      horizontal=True,
-      key=f"perspective_{st.session_state.reset_counter}",
+  st.radio(
+      "👁️ 敘事視角", ["老師視角", "孩子視角", "旁觀者視角"], horizontal=True, key=f"perspective_{rc}"
   )
-  text_length = st.radio(
-      "⚡ 文字長度",
-      [
-          "一句話入魂 (極度精簡)",
-          "微故事 (輕量精簡版)",
-          "情境對話 (還原現場童言童語)",
-      ],
-      horizontal=True,
-      key=f"text_length_{st.session_state.reset_counter}",
-  )
-
+  st.radio("⚡ 文字長度", list(LENGTH_RULES.keys()), horizontal=True, key=f"text_length_{rc}")
 with col2:
-  tone = st.multiselect(
+  st.multiselect(
       "🎨 語氣與氛圍 (可複選)",
       ["溫馨親切", "活潑逗趣", "專業信賴", "夢幻童話", "陽光正能量"],
       default=["溫馨親切"],
-      key=f"tone_{st.session_state.reset_counter}",
+      key=f"tone_{rc}",
   )
-  edu = st.multiselect(
+  st.multiselect(
       "💡 教育理念 (可複選)",
-      [
-          "日常生活體驗",
-          "生活自理",
-          "邏輯與專注力",
-          "人際與分享",
-          "感覺統合與大肌肉",
-          "美感與創造力",
-      ],
-      key=f"edu_{st.session_state.reset_counter}",
+      ["日常生活體驗", "生活自理", "邏輯與專注力", "人際與分享", "感覺統合與大肌肉", "美感與創造力"],
+      key=f"edu_{rc}",
   )
-  cta = st.multiselect(
-      "🎯 互動目標 (可複選)",
-      ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"],
-      key=f"cta_{st.session_state.reset_counter}",
+  st.multiselect(
+      "🎯 互動目標 (可複選)", ["呼籲按讚/愛心", "引導家長留言討論", "提醒重要事項"], key=f"cta_{rc}"
   )
 
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
-
-enable_blur = st.toggle(
-    "✨ 啟用 IG 防裁切模式：自動補上高級模糊背景 (轉為 4:5 完美比例)",
-    value=True,
-    key=f"blur_{st.session_state.reset_counter}",
-)
+opt1, opt2 = st.columns(2)
+with opt1:
+  enable_blur = st.toggle(
+      "✨ IG 防裁切模式：補上模糊背景，統一輸出 1080×1350 (4:5)", value=True, key=f"blur_{rc}"
+  )
+with opt2:
+  enable_mark = st.toggle(
+      "🖼️ 加上園所 Logo 浮水印（右下角）", value=True, key=f"mark_{rc}",
+      disabled=load_logo() is None,
+      help=None if load_logo() is not None else "找不到 logo.png，無法加浮水印",
+  )
 uploaded_files = st.file_uploader(
     "請拖曳或從手機相簿選擇多張照片 (數量無上限)",
     type=["png", "jpg", "jpeg", "webp"],
     accept_multiple_files=True,
-    key=f"files_{st.session_state.reset_counter}",
+    key=f"files_{rc}",
 )
-
 if uploaded_files:
   st.success(
-      f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI"
-      " 為您依據多樣性原則精選最佳畫面。"
+      f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI 為您依據多樣性原則精選最佳畫面。"
   )
 
 # --- 🚀 執行與操作按鈕區 ---
 st.markdown("---")
 btn_col1, btn_col2 = st.columns([3, 1])
-
 with btn_col1:
-  generate_btn = st.button(
-      "✨ 步驟 4：一鍵分析並產出社群貼文",
-      width="stretch",
-      type="primary",
-  )
-
+  generate_btn = st.button("✨ 步驟 4：一鍵分析並產出社群貼文", width="stretch", type="primary")
 with btn_col2:
   if st.button("🔄 一鍵清空 / 開始下一篇", width="stretch"):
     st.session_state.reset_counter += 1
+    for k in list(st.session_state.keys()):
+      if k == "result" or k.startswith(("edit_", "adopt_", "ver_pick", "rw_")):
+        del st.session_state[k]
     st.rerun()
 
-# --- 🧠 AI 核心運作邏輯 (v3.3.0 google-genai 新版 SDK) ---
+history_rows = None
+if history_enabled():
+  history_rows, _hist_err = fetch_history(HISTORY_URL, HISTORY_TOKEN, 10)
+
+# --- 🧠 第一次分析 ---
 if generate_btn:
   if not api_key:
     st.error("請先在最上方輸入 Gemini API Key！")
   elif not uploaded_files:
     st.error("請至少上傳一張照片！")
   else:
-    with st.spinner(
-        "系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."
-    ):
+    with st.spinner("系統正在全神貫注分析素材並撰寫精美文案中，請稍候..."):
       try:
-        # 新版 SDK：timeout 單位為毫秒（90 秒，多圖分析較保險）
-        client = genai.Client(
-            api_key=api_key,
-            http_options=genai_types.HttpOptions(timeout=90_000),
-        )
-
-        prompt_text = f"""
-                你是小鳥幼兒園的專業社群小編（品牌理念：everythingforkids，特色：自然探索、生活自理）。
-                我目前總共上傳了 {len(uploaded_files)} 張照片（第一張序號為 1，以此類推）。
-
-                【核心設定】
-                - 關鍵字：{keywords} | 類型：{post_type} | 敘事視角：{perspective}
-                - 語氣：{', '.join(tone)} | 教育價值：{', '.join(edu)} | 互動目標：{', '.join(cta)}
-
-                【文案長度與風格限制】: 必須嚴格依據您選取的「{text_length}」模式撰寫
-                - 一句話入魂 (極度精簡)：最高指導原則——「能用一個詞解決就不用一句話，能用一句話解決就絕對不寫一段話！」字數自然落在 50~60 字以內即可（請勿硬湊字數），保持洗鍊、震撼、直擊人心的風格。
-                - 微故事 (輕量精簡版)：總字數嚴格控制在 100~150 字以內，最多拆成 2 到 3 個極短段落。
-                - 情境對話 (還原現場童言童語)：直接以引號重現現場對話，字數控制在 150 字以內。
-
-                【核心撰寫原則】
-                1. 標籤規範：無論是 FB 或 IG 貼文，文末請務必「空一行」後，加入 6~8 個與照片內容相關的 hashtag（必須強制包含 #小鳥幼兒園 和 #everythingforkids 這兩個標籤）。
-                2. 互動克制：貼文內容請以自然敘事為主，絕對不要刻意加入要求家長互動的文字（例如：「大家覺得呢？」），除非上方勾選了明確的互動目標。
-
-                【任務 1：IG 智能挑圖 - 照片選用原則與上限嚴格限制】
-                1. 🌟數量限制🌟：如果上傳總數大於 10 張，您「必須且只能」從中精選出「剛好 10 張」最精彩、最值得串成一篇相簿的照片。如果總數小於或等於 10 張，請將上傳的所有序號全部列出。
-                2. 🌟多樣性選用原則🌟：在挑選時，必須嚴格避免單一人物重複率過高（不要都是同一個孩子的特寫），強制畫面模式分散（必須包含遠景呈現場景、中景呈現互動、特寫呈現專注表情）。
-                3. 您必須在整段回應的「最開頭」，使用以下暗號格式列出您挑選的照片「數字序號」（以半形逗號分隔，不要加任何文字、空格或英文字母），並依建議發文順序排列：
-                [SELECTED_IMAGES]1,2,3,4,5,6,7,8,9,10[/SELECTED_IMAGES]
-
-                【任務 2：撰寫雙平台文案】
-                請嚴格遵守上方的設定與原則撰寫，並使用以下標籤包裹您的回應，方便系統解析：
-                [IG_POST]
-                這裡放 IG 貼文內容（含豐富表情符號，文末空一行加上 6~8 個 hashtag）
-                [/IG_POST]
-                [FB_POST]
-                這裡放 FB 貼文內容（文末空一行加上 6~8 個 hashtag）
-                [/FB_POST]
-                [SUGGESTION]
-                這裡放 IG 挑圖建議（簡述這個照片組合最亮眼、最能打動家長的是哪一個畫面或瞬間）
-                [/SUGGESTION]
-                """
-
-        # 送 API 用的壓縮圖（v3.3.0：修正小圖被提前關閉的 Bug，並自動轉正）
+        settings = snapshot_settings()
+        prompt = build_analysis_prompt(len(uploaded_files), settings, history_rows)
         api_images = [load_image(f, max_size=1024) for f in uploaded_files]
-        contents = [prompt_text] + api_images
-
-        response_text = None
-        status_text = st.empty()
-        error_log = []
-
-        for idx, current_model in enumerate(FALLBACK_MODELS):
-          try:
-            if idx > 0:
-              status_text.warning(
-                  f"🔄 正在為您自動嘗試備用模型: {current_model}..."
-              )
-            response = client.models.generate_content(
-                model=current_model, contents=contents
-            )
-            if response.text:
-              response_text = response.text
-              status_text.empty()
-              break
-            error_log.append(f"{current_model}：回傳內容為空")
-          except Exception as e:
-            if is_fatal_error(e):
-              status_text.empty()
-              raise Exception(
-                  "API 金鑰無效或沒有權限，請到 Google AI Studio 確認金鑰"
-                  f"是否正確、是否已啟用。（原始訊息：{e}）"
-              )
-            error_log.append(f"{current_model}：{e}")
-            continue
-
-        # 傳輸完成後立即清除 API 圖片陣列並回收記憶體
-        del contents
+        status = st.empty()
+        data, raw = call_gemini(api_key, [prompt] + api_images, AnalysisResult, status)
         del api_images
         gc.collect()
 
-        if not response_text:
-          detail = "\n".join(f"• {line}" for line in error_log)
-          raise Exception(
-              "所有備用模型均嘗試失敗，各模型錯誤如下：\n" + detail
-          )
+        picked = []
+        for n in data.get("selected_images", []):
+          idx = int(n) - 1
+          if 0 <= idx < len(uploaded_files) and idx not in picked:
+            picked.append(idx)
+          if len(picked) >= MAX_SELECTED:
+            break
+        if not picked:
+          picked = list(range(min(len(uploaded_files), MAX_SELECTED)))
 
-        st.success("🎉 文案與分析皆已順利產出！")
+        images = []
+        for idx in picked:
+          images.append(make_final_image(uploaded_files[idx], enable_blur, enable_mark))
+          gc.collect()
 
-        # 1. 嚴選照片區塊（延遲加載：僅讀取被選中的照片）
-        match = re.search(
-            r"\[SELECTED_IMAGES\](.*?)\[/SELECTED_IMAGES\]",
-            response_text,
-            re.DOTALL,
-        )
-        if match:
-          st.markdown("### 🏆 AI 嚴選最佳照片")
-          st.info(
-              "💡 **手機存圖秘訣**：請直接「長按」下方您喜歡的照片，選擇"
-              " **「儲存影像」** 即可！"
-          )
-
-          picked = parse_selected_indices(match.group(1), len(uploaded_files))
-          if picked:
-            img_cols = st.columns(2)
-            for order_idx, file_idx in enumerate(picked):
-              # 一次只處理一張，處理完立即釋放，降低記憶體高峰
-              original_img = load_image(uploaded_files[file_idx], max_size=1600)
-              if enable_blur:
-                final_img = add_blur_padding(original_img)
-                caption_text = (
-                    f"🏆 建議擺在第 {order_idx + 1} 張 (已防裁切處理)"
-                )
-              else:
-                final_img = original_img
-                caption_text = f"🏆 建議擺在第 {order_idx + 1} 張 (原圖尺寸)"
-              img_cols[order_idx % 2].image(
-                  final_img, width="stretch", caption=caption_text
-              )
-              del original_img, final_img
-            gc.collect()
-
-        # 2. 雙平台貼文文案精準拆解
-        fb_match = re.search(
-            r"\[FB_POST\](.*?)\[/FB_POST\]", response_text, re.DOTALL
-        )
-        ig_match = re.search(
-            r"\[IG_POST\](.*?)\[/IG_POST\]", response_text, re.DOTALL
-        )
-        sug_match = re.search(
-            r"\[SUGGESTION\](.*?)\[/SUGGESTION\]", response_text, re.DOTALL
-        )
-
-        fb_text = (
-            fb_match.group(1).strip() if fb_match else "FB 貼文生成失敗"
-        )
-        ig_text = (
-            ig_match.group(1).strip() if ig_match else "IG 貼文生成失敗"
-        )
-        sug_text = (
-            sug_match.group(1).strip() if sug_match else "無提供建議"
-        )
-
-        st.markdown("---")
-        st.markdown("### 📘 Facebook 貼文文案")
-        st.text_area(
-            "FB 專用格式（已自動整合標籤）",
-            value=fb_text,
-            height=250,
-            key="fb_area",
-        )
-
-        st.markdown("### 📸 Instagram 貼文文案")
-        st.text_area(
-            "IG 專用格式（豐富表情與精準排版）",
-            value=ig_text,
-            height=250,
-            key="ig_area",
-        )
-
-        st.markdown("### 💡 AI 小編挑圖建議")
-        st.info(sug_text)
-
-        with st.expander("🔍 檢視 AI 原始完整回應 (除錯與備份用)"):
-          st.text(response_text)
-
+        st.session_state.result = {
+            "images": images,
+            "blur": enable_blur,
+            "activity": safe_name(settings["keywords"], settings["post_type"]),
+            "summary": data.get("photo_summary", ""),
+            "suggestion": data.get("suggestion", ""),
+            "settings": settings,
+            "raw": [raw],
+            "versions": [{
+                "label": "初版",
+                "ig_body": data.get("ig_text", ""),
+                "fb_body": data.get("fb_text", ""),
+                "hashtags": build_hashtags(data.get("content_hashtags", [])),
+                "ig_edit": None,
+                "fb_edit": None,
+            }],
+            "adopted": [],
+        }
+        st.session_state.ver_pick = 0
+        for k in list(st.session_state.keys()):
+          if k.startswith(("edit_ig_", "edit_fb_")):
+            del st.session_state[k]
       except Exception as e:
         st.error(f"系統偵測到錯誤：{e}")
+
+# =========================================================================
+# 📤 成果區（存在 session_state，按任何按鈕都不會消失）
+# =========================================================================
+result = st.session_state.get("result")
+if result:
+  # 🔁 處理「再給我一版」（在版本選單繪製前執行）
+  if st.session_state.get("rw_go"):
+    current_vid = st.session_state.get("ver_pick", 0)
+    current = result["versions"][current_vid]
+    target = {"兩篇都重寫": "both", "只重寫 IG": "ig", "只重寫 FB": "fb"}[
+        st.session_state.get("rw_target", "兩篇都重寫")
+    ]
+    direction = st.session_state.get("rw_direction", "").strip()
+    with st.spinner("正在依照片摘要重新撰寫文案..."):
+      try:
+        settings = snapshot_settings()
+        prompt = build_rewrite_prompt(
+            result["summary"], settings, current, target, direction, history_rows
+        )
+        data, raw = call_gemini(api_key, [prompt], RewriteResult, st.empty())
+        new = {
+            "label": direction[:12] if direction else f"第 {len(result['versions']) + 1} 版",
+            "ig_body": data["ig_text"] if target in ("both", "ig") else current["ig_body"],
+            "fb_body": data["fb_text"] if target in ("both", "fb") else current["fb_body"],
+            "hashtags": build_hashtags(data.get("content_hashtags", []))
+            if target == "both" else list(current["hashtags"]),
+            "ig_edit": None if target in ("both", "ig") else current.get("ig_edit"),
+            "fb_edit": None if target in ("both", "fb") else current.get("fb_edit"),
+        }
+        result["versions"].append(new)
+        result["raw"].append(raw)
+        if len(result["versions"]) > MAX_VERSIONS:
+          result["versions"].pop(0)
+          result["raw"].pop(0)
+          result["adopted"] = [a - 1 for a in result["adopted"] if a - 1 >= 0]
+          for k in list(st.session_state.keys()):
+            if k.startswith(("edit_ig_", "edit_fb_")):
+              del st.session_state[k]
+        st.session_state.ver_pick = len(result["versions"]) - 1
+        st.session_state.rw_direction = ""
+      except Exception as e:
+        st.error(f"重寫時發生錯誤：{e}")
+
+  st.success("🎉 文案與分析皆已產出！下方的照片與文案會保留到您按「一鍵清空」為止。")
+
+  # ---------- 照片 ----------
+  st.markdown("### 🏆 AI 嚴選最佳照片")
+  images = result["images"]
+  activity = result["activity"]
+  d1, d2 = st.columns(2)
+  with d1:
+    st.download_button(
+        f"📦 下載 ZIP（{len(images)} 張，電腦用）",
+        data=build_zip(images, activity),
+        file_name=f"{datetime.now(TZ):%Y%m%d}_{activity}.zip",
+        mime="application/zip",
+        on_click="ignore",
+        width="stretch",
+    )
+  with d2:
+    st.html(share_widget_html(images, activity), unsafe_allow_javascript=True)
+  st.caption("💡 手機也可以「長按」下方照片，選擇「儲存影像」。照片依建議發文順序排列。")
+  img_cols = st.columns(2)
+  mode_note = "1080×1350" if result["blur"] else "原圖比例"
+  for i, data in enumerate(images):
+    img_cols[i % 2].image(data, width="stretch", caption=f"🏆 建議擺在第 {i + 1} 張（{mode_note}）")
+
+  # ---------- 文案 ----------
+  st.markdown("---")
+  versions = result["versions"]
+  if st.session_state.get("ver_pick", 0) >= len(versions):
+    st.session_state.ver_pick = len(versions) - 1
+  st.markdown("### ✍️ 貼文文案")
+  vid = st.radio(
+      "📚 版本（最多保留 5 版，關閉網頁後清空）",
+      options=list(range(len(versions))),
+      format_func=lambda i: f"版本 {i + 1}｜{versions[i]['label']}" + ("　✅已採用" if i in result["adopted"] else ""),
+      horizontal=True,
+      key="ver_pick",
+  )
+  ver = versions[vid]
+  editing = st.toggle("✏️ 我要修改文案", key="edit_mode")
+
+  tab_ig, tab_fb = st.columns(2)
+  for col, platform, title in ((tab_ig, "ig", "📸 Instagram"), (tab_fb, "fb", "📘 Facebook")):
+    with col:
+      st.markdown(f"#### {title}")
+      text = full_text(ver, platform)
+      if editing:
+        st.text_area(
+            f"{title} 文案（修改後自動更新下方複製框）",
+            value=text,
+            height=260,
+            key=f"edit_{platform}_{vid}",
+            on_change=on_edit_change,
+            args=(vid, platform),
+        )
+        text = full_text(ver, platform)
+      st.code(text, language=None, wrap_lines=True)
+      st.caption("👆 點右上角圖示即可一鍵複製")
+      n_tags = count_hashtags(text)
+      if n_tags > MAX_HASHTAGS:
+        st.warning(f"⚠️ 目前有 {n_tags} 個 hashtag，Instagram 規定最多 {MAX_HASHTAGS} 個，請刪減。")
+
+  # ---------- 採用這版 ----------
+  a1, a2 = st.columns([1, 2])
+  with a1:
+    if vid in result["adopted"]:
+      st.success("✅ 這個版本已記錄到發文歷史")
+    elif st.button("✅ 採用這版（記錄到發文歷史）", type="primary", width="stretch",
+                   disabled=not history_enabled(), key=f"adopt_{vid}"):
+      s = result["settings"]
+      ok, err = save_history({
+          "date": f"{datetime.now(TZ):%Y-%m-%d %H:%M}",
+          "keywords": s["keywords"],
+          "post_type": s["post_type"],
+          "text_length": s["text_length"],
+          "ig": full_text(ver, "ig"),
+          "fb": full_text(ver, "fb"),
+          "hashtags": " ".join(ver["hashtags"]),
+          "version": f"版本 {vid + 1}",
+      })
+      if ok:
+        result["adopted"].append(vid)
+        st.rerun()
+      else:
+        st.error(f"記錄失敗：{err}")
+  with a2:
+    if not history_enabled():
+      st.caption("ℹ️ 尚未設定 Google 試算表（HISTORY_URL / HISTORY_TOKEN），發文歷史功能暫時關閉。")
+
+  # ---------- 再給我一版 ----------
+  st.markdown("---")
+  st.markdown("### 🔁 再給我一版")
+  st.caption(
+      "照片不變，只依「照片摘要」快速重寫文案。也可以先回到步驟 2 調整語氣、文字長度等設定，再按重寫。"
+  )
+  r1, r2 = st.columns([1, 2])
+  with r1:
+    st.radio("重寫範圍", ["兩篇都重寫", "只重寫 IG", "只重寫 FB"], key="rw_target")
+  with r2:
+    st.text_input(
+        "修改方向（選填）",
+        placeholder="例如：再活潑一點、提到今天下雨還是玩得很開心、不要用驚嘆號",
+        key="rw_direction",
+    )
+  st.button(
+      f"🔁 再給我一版（目前 {len(versions)}/{MAX_VERSIONS} 版，超過會移除最舊的）",
+      key="rw_go",
+      width="stretch",
+      disabled=not api_key,
+  )
+
+  st.markdown("### 💡 AI 小編挑圖建議")
+  st.info(result["suggestion"] or "無提供建議")
+  with st.expander("🔍 檢視照片摘要與 AI 原始回應 (除錯與備份用)"):
+    st.markdown("**照片內容摘要**")
+    st.write(result["summary"])
+    st.markdown("**AI 原始回應（最新一次）**")
+    st.code(result["raw"][-1], language="json", wrap_lines=True)
+
+# =========================================================================
+# 🗂️ 發文歷史紀錄
+# =========================================================================
+st.markdown("---")
+with st.expander("🗂️ 最近 10 篇發文紀錄"):
+  if not history_enabled():
+    st.caption("尚未設定 Google 試算表。設定方式請見功能清單「發文歷史設定」章節。")
+  elif history_rows is None:
+    st.warning(f"讀取發文紀錄失敗：{_hist_err}")
+  elif not history_rows:
+    st.caption("目前還沒有紀錄。產出文案後按「✅ 採用這版」就會記錄在這裡。")
+  else:
+    table = []
+    for row in history_rows:
+      row = list(row) + [""] * 8
+      table.append({
+          "日期": str(row[0])[:16],
+          "活動關鍵字": row[1],
+          "類型": row[2],
+          "IG 文案": re.sub(r"\s+", " ", str(row[4]))[:60],
+          "Hashtag": row[6],
+      })
+    st.dataframe(table, hide_index=True, width="stretch")
+    st.caption("AI 撰寫新文案時，會自動參考這些紀錄避免重複。")
