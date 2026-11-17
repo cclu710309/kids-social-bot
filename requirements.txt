@@ -1,3 +1,5 @@
-streamlit
-google-generativeai>=0.7.2
-pillow
+# 小鳥幼兒園貼文神器 v3.3.0 (2026.11.17)｜🟣 Claude 協作版
+# v3.3.0 起：舊套件 google-generativeai 已停止支援，改用新版 google-genai
+streamlit>=1.50
+google-genai>=1.0
+pillow>=10.0
