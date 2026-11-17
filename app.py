@@ -1,12 +1,17 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器
-# Current Version: v4.0.0 (2026.11.17 Build)｜🟣 Claude 協作版
+# Current Version: v4.1.0 (2026.11.17 Build)｜🟣 Claude 協作版
 #
 # 🧬 開發歷程 (AI 協作夥伴):
 #   ├─ v3.0.0 ~ v3.2.0 ── 🔵 Google Gemini 協作開發
 #   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發
 #
 # 📄 變更日誌 (Changelog):
+# [2026.11.17] v4.1.0 🟣Claude - 🛡️ 孩子肖像權保護：
+#   AI 挑圖時同時標出每張臉的位置（只找「臉在哪」，不辨識「是誰」，不保存任何臉部資料）；
+#   老師按照片下方的編號按鈕選擇要遮的臉，或一鍵全部遮住／取消；
+#   四種程式繪製貼圖（笑臉、星星、愛心、花朵），每篇可選，預設笑臉；
+#   下載 ZIP、存到相簿、長按存圖前，須先勾選「已確認沒有未同意公開的孩子」。
 # [2026.11.17] v4.0.0 🟣Claude - 全面升級版（逐項討論定案後一次完成）：
 #   🧱 基礎：結果存入 session_state（按任何按鈕都不會消失）；AI 改用 JSON 結構化輸出；
 #           第一次分析同時產生「照片內容摘要」。
@@ -43,7 +48,8 @@ from google.genai import types as genai_types
 from PIL import Image, ImageFilter, ImageOps
 from pydantic import BaseModel
 
-APP_VERSION = "v4.0.0"
+APP_VERSION = "v4.1.0"
+STICKERS = {"笑臉": "smile", "星星": "star", "愛心": "heart", "花朵": "flower"}
 MAX_SELECTED = 10
 MAX_VERSIONS = 5
 MAX_HASHTAGS = 5
@@ -114,8 +120,21 @@ FALLBACK_MODELS = (
 # =========================================================================
 # 🧾 AI 回傳格式（JSON 結構化輸出）
 # =========================================================================
+class FaceBox(BaseModel):
+  ymin: int
+  xmin: int
+  ymax: int
+  xmax: int
+
+
+class PhotoFaces(BaseModel):
+  image: int
+  faces: list[FaceBox]
+
+
 class AnalysisResult(BaseModel):
   selected_images: list[int]
+  faces: list[PhotoFaces]
   photo_summary: str
   ig_text: str
   fb_text: str
@@ -209,16 +228,152 @@ def add_watermark(canvas, photo_box, logo):
   return out.convert("RGB")
 
 
-def make_final_image(file, blur, watermark):
+def to_jpeg(img, quality=90):
+  buf = io.BytesIO()
+  img.save(buf, "JPEG", quality=quality, optimize=True)
+  return buf.getvalue()
+
+
+def make_base_photo(file, blur, face_boxes):
+  """產生「尚未遮臉、尚未加 Logo」的底圖，並把 AI 的臉部座標換算到底圖上。"""
   img = load_image(file, max_size=1600)
   canvas, box = compose_post_image(img, blur)
+  ox, oy, x2, y2 = box
+  pw, ph = x2 - ox, y2 - oy
+  faces = []
+  for f in face_boxes:
+    ymin, xmin, ymax, xmax = (max(0, min(1000, int(v))) for v in f)
+    if ymax <= ymin or xmax <= xmin:
+      continue
+    faces.append((
+        ox + xmin * pw // 1000, oy + ymin * ph // 1000,
+        ox + xmax * pw // 1000, oy + ymax * ph // 1000,
+    ))
+  band = max(1, canvas.size[1] // 5)  # 由上到下分成 5 排，每排再由左到右編號
+  faces.sort(key=lambda b: (((b[1] + b[3]) // 2) // band, b[0]))
+  data = {"base": to_jpeg(canvas, 95), "box": box, "faces": faces}
+  del img, canvas
+  return data
+
+
+# --- 🛡️ 遮臉貼圖（程式繪製，不需額外字型）---
+def _bezier(p0, p1, p2, p3, n=24):
+  pts = []
+  for i in range(n + 1):
+    t = i / n
+    a, b, c, d = (1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t ** 2, t ** 3
+    pts.append((a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+                a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]))
+  return pts
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def draw_sticker(kind, size):
+  """以 120×120 的設計座標（中心為 0,0）繪製，再縮成 size×size。"""
+  from PIL import ImageDraw
+  ss = 4
+  S = max(8, size) * ss
+  k = S / 120.0
+  im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+  d = ImageDraw.Draw(im)
+
+  def P(x, y):
+    return (S / 2 + x * k, S / 2 + y * k)
+
+  def circle(x, y, r, fill, outline=None, w=0):
+    (a, b), (c, e) = P(x - r, y - r), P(x + r, y + r)
+    d.ellipse([a, b, c, e], fill=fill, outline=outline, width=int(w * k))
+
+  def ellipse(x, y, rx, ry, fill):
+    (a, b), (c, e) = P(x - rx, y - ry), P(x + rx, y + ry)
+    d.ellipse([a, b, c, e], fill=fill)
+
+  def smile(x0, y0, cy, x1, color, w):
+    pts = [P(*p) for p in _bezier((x0, y0), (x0 * 0.33, cy), (x1 * 0.33, cy), (x1, y0), 16)]
+    d.line(pts, fill=color, width=int(w * k), joint="curve")
+
+  brown, amber, gold = "#633806", "#BA7517", "#FAC775"
+  if kind == "star":
+    pts = [(0, -52), (14, -18), (50, -16), (22, 8), (32, 44), (0, 24),
+           (-32, 44), (-22, 8), (-50, -16), (-14, -18)]
+    d.polygon([P(*p) for p in pts], fill=gold, outline=amber, width=int(3 * k))
+    circle(-9, -2, 3.5, brown)
+    circle(9, -2, 3.5, brown)
+    smile(-8, 9, 16, 8, brown, 3)
+  elif kind == "heart":
+    path = (_bezier((0, 44), (-60, 4), (-52, -46), (-22, -46))
+            + _bezier((-22, -46), (-8, -46), (0, -36), (0, -28))
+            + _bezier((0, -28), (0, -36), (8, -46), (22, -46))
+            + _bezier((22, -46), (52, -46), (60, 4), (0, 44)))
+    d.polygon([P(*p) for p in path], fill="#ED93B1", outline="#993556", width=int(3 * k))
+    circle(-13, -12, 4, "#4B1528")
+    circle(13, -12, 4, "#4B1528")
+    smile(-9, 0, 9, 9, "#4B1528", 3)
+  elif kind == "flower":
+    for x, y in ((0, -30), (28.5, -9), (17.6, 24), (-17.6, 24), (-28.5, -9)):
+      circle(x, y, 20, "#F4C0D1", "#D4537E", 2.5)
+    circle(0, 0, 22, gold, amber, 2.5)
+    circle(-7, -4, 3, brown)
+    circle(7, -4, 3, brown)
+    smile(-7, 6, 12, 7, brown, 2.5)
+  else:  # smile
+    circle(0, 0, 48, gold, amber, 3)
+    ellipse(-16, -10, 5, 8, brown)
+    ellipse(16, -10, 5, 8, brown)
+    circle(-28, 10, 7, (240, 153, 123, 180))
+    circle(28, 10, 7, (240, 153, 123, 180))
+    smile(-18, 14, 34, 18, brown, 4)
+  return im.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def apply_covers(canvas, faces, covers, kind):
+  out = canvas.convert("RGBA")
+  W, H = out.size
+  for n in covers:
+    if not (1 <= n <= len(faces)):
+      continue
+    x1, y1, x2, y2 = faces[n - 1]
+    size = int(max(x2 - x1, y2 - y1) * 1.35) + 8
+    sticker = draw_sticker(kind, size)
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    out.alpha_composite(sticker, (max(0, min(W - size, cx - size // 2)),
+                                  max(0, min(H - size, cy - size // 2))))
+  return out.convert("RGB")
+
+
+def render_photo(photo, covers, kind, watermark):
+  """乾淨成品：遮臉貼圖 + Logo（下載、存相簿、長按用）。"""
+  canvas = Image.open(io.BytesIO(photo["base"])).convert("RGB")
+  canvas = apply_covers(canvas, photo["faces"], covers, kind)
   logo = load_logo() if watermark else None
   if logo is not None:
-    canvas = add_watermark(canvas, box, logo)
-  buf = io.BytesIO()
-  canvas.save(buf, "JPEG", quality=90, optimize=True)
-  del img, canvas
-  return buf.getvalue()
+    canvas = add_watermark(canvas, photo["box"], logo)
+  return to_jpeg(canvas, 90)
+
+
+def render_preview(final_jpeg, faces, covers, width=540):
+  """確認用預覽：在成品上標出每張臉的編號（只在畫面上看，不會被下載）。"""
+  from PIL import ImageDraw, ImageFont
+  img = Image.open(io.BytesIO(final_jpeg)).convert("RGB")
+  scale = width / img.size[0]
+  img = img.resize((width, int(img.size[1] * scale)), Image.Resampling.LANCZOS)
+  d = ImageDraw.Draw(img)
+  try:
+    font = ImageFont.load_default(size=16)
+  except Exception:
+    font = ImageFont.load_default()
+  for n, (x1, y1, x2, y2) in enumerate(faces, start=1):
+    x1, y1, x2, y2 = (int(v * scale) for v in (x1, y1, x2, y2))
+    covered = n in covers
+    if not covered:
+      d.rectangle([x1, y1, x2, y2], outline="#FFFFFF", width=3)
+      d.rectangle([x1 + 2, y1 + 2, x2 - 2, y2 - 2], outline="#BA7517", width=2)
+    r = 12
+    cx, cy = max(r, x1), max(r, y1)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r],
+              fill="#3B6D11" if covered else "#BA7517", outline="#FFFFFF", width=2)
+    d.text((cx, cy), str(n), fill="#FFFFFF", font=font, anchor="mm")
+  return to_jpeg(img, 85)
 
 
 def safe_name(text, fallback):
@@ -458,6 +613,11 @@ def build_analysis_prompt(n_photos, s, history_rows):
 【任務 3：雙平台文案】依上方設定撰寫 ig_text、fb_text、content_hashtags。
 
 【任務 4：挑圖建議】suggestion：簡述這組照片最亮眼、最能打動家長的畫面或瞬間。
+
+【任務 5：臉部位置（肖像權保護用）】faces：對 selected_images 中的「每一張」照片各給一筆，
+image 填該照片的原序號，faces 列出照片中所有看得到的人臉位置（孩子與大人都要，包含側臉、
+遠處很小的臉、被部分遮住的臉）。座標用 0～1000 的相對位置：ymin、xmin、ymax、xmax。
+只要標出位置，不要辨識或猜測是誰。照片中看不到任何臉時，faces 給空陣列。
 """
 
 
@@ -636,7 +796,8 @@ with btn_col2:
   if st.button("🔄 一鍵清空 / 開始下一篇", width="stretch"):
     st.session_state.reset_counter += 1
     for k in list(st.session_state.keys()):
-      if k == "result" or k.startswith(("edit_", "adopt_", "ver_pick", "rw_")):
+      if k in ("result", "consent_ok", "sticker_kind") or k.startswith(
+          ("edit_", "adopt_", "ver_pick", "rw_", "cover_")):
         del st.session_state[k]
     st.rerun()
 
@@ -671,13 +832,24 @@ if generate_btn:
         if not picked:
           picked = list(range(min(len(uploaded_files), MAX_SELECTED)))
 
-        images = []
+        face_map = {}
+        for item in data.get("faces", []) or []:
+          try:
+            face_map[int(item["image"]) - 1] = [
+                (f["ymin"], f["xmin"], f["ymax"], f["xmax"]) for f in item.get("faces", [])
+            ]
+          except Exception:
+            continue
+
+        photos = []
         for idx in picked:
-          images.append(make_final_image(uploaded_files[idx], enable_blur, enable_mark))
+          photos.append(make_base_photo(uploaded_files[idx], enable_blur, face_map.get(idx, [])))
           gc.collect()
 
         st.session_state.result = {
-            "images": images,
+            "photos": photos,
+            "watermark": enable_mark,
+            "render_cache": {},
             "blur": enable_blur,
             "activity": safe_name(settings["keywords"], settings["post_type"]),
             "summary": data.get("photo_summary", ""),
@@ -696,7 +868,7 @@ if generate_btn:
         }
         st.session_state.ver_pick = 0
         for k in list(st.session_state.keys()):
-          if k.startswith(("edit_ig_", "edit_fb_")):
+          if k.startswith(("edit_ig_", "edit_fb_", "cover_")) or k in ("consent_ok", "sticker_kind"):
             del st.session_state[k]
       except Exception as e:
         st.error(f"系統偵測到錯誤：{e}")
@@ -747,26 +919,92 @@ if result:
   st.success("🎉 文案與分析皆已產出！下方的照片與文案會保留到您按「一鍵清空」為止。")
 
   # ---------- 照片 ----------
-  st.markdown("### 🏆 AI 嚴選最佳照片")
-  images = result["images"]
+  photos = result["photos"]
   activity = result["activity"]
-  d1, d2 = st.columns(2)
-  with d1:
-    st.download_button(
-        f"📦 下載 ZIP（{len(images)} 張，電腦用）",
-        data=build_zip(images, activity),
-        file_name=f"{datetime.now(TZ):%Y%m%d}_{activity}.zip",
-        mime="application/zip",
-        on_click="ignore",
-        width="stretch",
-    )
-  with d2:
-    st.html(share_widget_html(images, activity), unsafe_allow_javascript=True)
-  st.caption("💡 手機也可以「長按」下方照片，選擇「儲存影像」。照片依建議發文順序排列。")
-  img_cols = st.columns(2)
-  mode_note = "1080×1350" if result["blur"] else "原圖比例"
-  for i, data in enumerate(images):
-    img_cols[i % 2].image(data, width="stretch", caption=f"🏆 建議擺在第 {i + 1} 張（{mode_note}）")
+  cache = result["render_cache"]
+  if len(cache) > 120:
+    cache.clear()
+
+  st.markdown("### 🛡️ AI 嚴選照片｜肖像權確認")
+  st.caption(
+      "照片上的 ① ② ③ 是 AI 找到的臉。若有未同意公開的孩子，請按該照片下方的號碼蓋上貼圖；"
+      "再按一次可取消。大多數貼文不需要點任何東西。"
+  )
+  s1, s2, s3 = st.columns([2, 1, 1])
+  with s1:
+    kind_label = st.segmented_control(
+        "遮臉貼圖", list(STICKERS.keys()), default="笑臉", key="sticker_kind", required=True
+    ) or "笑臉"
+  kind = STICKERS[kind_label]
+
+  def _set_all(on):
+    for j, p in enumerate(photos):
+      st.session_state[f"cover_{j}"] = list(range(1, len(p["faces"]) + 1)) if on else []
+    st.session_state.consent_ok = False
+
+  def _covers_changed():
+    st.session_state.consent_ok = False
+
+  with s2:
+    st.button("全部遮住", width="stretch", on_click=_set_all, args=(True,))
+  with s3:
+    st.button("全部取消", width="stretch", on_click=_set_all, args=(False,))
+
+  finals = []
+  prev_cols = st.columns(2)
+  for i, p in enumerate(photos):
+    covers = tuple(sorted(st.session_state.get(f"cover_{i}", []) or []))
+    fkey = (i, covers, kind, "final")
+    if fkey not in cache:
+      cache[fkey] = render_photo(p, covers, kind, result["watermark"])
+    finals.append(cache[fkey])
+    pkey = (i, covers, kind, "preview")
+    if pkey not in cache:
+      cache[pkey] = render_preview(cache[fkey], p["faces"], covers)
+    with prev_cols[i % 2]:
+      n_faces = len(p["faces"])
+      st.image(cache[pkey], width="stretch",
+               caption=f"建議擺在第 {i + 1} 張｜偵測到 {n_faces} 張臉")
+      if n_faces:
+        st.pills(
+            f"第 {i + 1} 張：要遮的臉",
+            options=list(range(1, n_faces + 1)),
+            selection_mode="multi",
+            key=f"cover_{i}",
+            on_change=_covers_changed,
+        )
+      else:
+        st.caption("沒有偵測到臉，不用處理")
+
+  st.warning(
+      "⚠️ AI 可能漏掉很小、側面或被擋住的臉，請逐張確認。"
+      "若有漏標又不能公開的孩子，建議換掉那張照片。"
+  )
+  n_covered = sum(len(st.session_state.get(f"cover_{i}", []) or []) for i in range(len(photos)))
+  st.caption(f"目前已遮住 {n_covered} 張臉。")
+  consent = st.checkbox("我已確認本篇照片中，沒有未同意公開的孩子", key="consent_ok")
+
+  if not consent:
+    st.info("勾選上方確認後，才會出現下載按鈕與可儲存的照片。")
+  else:
+    st.markdown("### 🏆 可下載的完成照片")
+    d1, d2 = st.columns(2)
+    with d1:
+      st.download_button(
+          f"📦 下載 ZIP（{len(finals)} 張，電腦用）",
+          data=build_zip(finals, activity),
+          file_name=f"{datetime.now(TZ):%Y%m%d}_{activity}.zip",
+          mime="application/zip",
+          on_click="ignore",
+          width="stretch",
+      )
+    with d2:
+      st.html(share_widget_html(finals, activity), unsafe_allow_javascript=True)
+    st.caption("💡 手機也可以「長按」下方照片，選擇「儲存影像」。照片依建議發文順序排列。")
+    img_cols = st.columns(2)
+    mode_note = "1080×1350" if result["blur"] else "原圖比例"
+    for i, data in enumerate(finals):
+      img_cols[i % 2].image(data, width="stretch", caption=f"🏆 建議擺在第 {i + 1} 張（{mode_note}）")
 
   # ---------- 文案 ----------
   st.markdown("---")
