@@ -1,12 +1,18 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器
-# Current Version: v4.1.0 (2026.11.17 Build)｜🟣 Claude 協作版
+# Current Version: v5.0.0 (2026.11.18 Build)｜🟣 Claude 協作版
 #
 # 🧬 開發歷程 (AI 協作夥伴):
 #   ├─ v3.0.0 ~ v3.2.0 ── 🔵 Google Gemini 協作開發
 #   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發
 #
 # 📄 變更日誌 (Changelog):
+# [2026.11.18] v5.0.0 🟣Claude - 📤 Meta 一鍵發文：
+#   發布密碼（PUBLISH_PASSWORD）保護發布區；IG／FB 可勾選、預設兩個都發；
+#   立即發布或排程（10 分鐘～30 天）：FB 由 Meta 排程，IG 由 Google Apps Script 每 5 分鐘代發；
+#   已排程清單＋取消排程；照片經 FB 粉絲專頁「不公開照片」中轉給 IG（不經第三方）；
+#   發布／排程後自動寫入發文紀錄（含 IG／FB 貼文連結與狀態）；單一平台失敗可單獨重試；
+#   FB 可加選照片（收合式，FB 合計最多 20 張，加選照片同樣經過遮臉確認）。
 # [2026.11.17] v4.1.0 🟣Claude - 🛡️ 孩子肖像權保護：
 #   AI 挑圖時同時標出每張臉的位置（只找「臉在哪」，不辨識「是誰」，不保存任何臉部資料）；
 #   老師按照片下方的編號按鈕選擇要遮的臉，或一鍵全部遮住／取消；
@@ -36,9 +42,10 @@ import io
 import json
 import os
 import re
+import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -48,7 +55,8 @@ from google.genai import types as genai_types
 from PIL import Image, ImageFilter, ImageOps
 from pydantic import BaseModel
 
-APP_VERSION = "v4.1.0"
+APP_VERSION = "v5.0.0"
+MAX_FB_PHOTOS = 20
 STICKERS = {"笑臉": "smile", "星星": "star", "愛心": "heart", "花朵": "flower"}
 MAX_SELECTED = 10
 MAX_VERSIONS = 5
@@ -109,6 +117,11 @@ EMBEDDED_API_KEY = get_secret("GEMINI_API_KEY")
 APP_PASSWORD = get_secret("APP_PASSWORD")
 HISTORY_URL = get_secret("HISTORY_URL")
 HISTORY_TOKEN = get_secret("HISTORY_TOKEN")
+PUBLISH_PASSWORD = get_secret("PUBLISH_PASSWORD")
+META_TOKEN = get_secret("META_TOKEN")
+META_PAGE_ID = get_secret("META_PAGE_ID")
+META_IG_ID = get_secret("META_IG_ID")
+META_VER = get_secret("META_GRAPH_VERSION", "v26.0")
 _custom_models = get_secret("GEMINI_MODELS")
 FALLBACK_MODELS = (
     [m.strip() for m in _custom_models.split(",") if m.strip()]
@@ -140,6 +153,10 @@ class AnalysisResult(BaseModel):
   fb_text: str
   content_hashtags: list[str]
   suggestion: str
+
+
+class FacesOnly(BaseModel):
+  faces: list[PhotoFaces]
 
 
 class RewriteResult(BaseModel):
@@ -526,6 +543,199 @@ def history_prompt_block(rows):
   )
 
 
+def script_post(action, payload, timeout=60):
+  """呼叫 Google Apps Script 後台（發文紀錄＋IG 排程鬧鐘）。"""
+  try:
+    body = dict(payload, token=HISTORY_TOKEN, action=action)
+    r = requests.post(
+        HISTORY_URL,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        timeout=timeout,
+    )
+    data = r.json()
+    if data.get("ok"):
+      fetch_history.clear()
+      return True, data
+    return False, data.get("error", "未知錯誤")
+  except Exception as e:
+    return False, str(e)
+
+
+def fetch_scheduled():
+  try:
+    r = requests.get(HISTORY_URL, params={"token": HISTORY_TOKEN, "mode": "scheduled"}, timeout=20)
+    data = r.json()
+    if not data.get("ok"):
+      return None, data.get("error", "未知錯誤")
+    return data.get("items", []), None
+  except Exception as e:
+    return None, str(e)
+
+
+# =========================================================================
+# 📤 Meta 發文（Graph API）
+# =========================================================================
+class MetaError(Exception):
+  pass
+
+
+def meta_ready():
+  return bool(META_TOKEN and META_PAGE_ID and META_IG_ID)
+
+
+def graph(method, path, params=None, files=None, timeout=60):
+  url = f"https://graph.facebook.com/{META_VER}/{path}"
+  all_params = dict(params or {}, access_token=META_TOKEN)
+  if method in ("GET", "DELETE"):
+    r = requests.request(method, url, params=all_params, timeout=timeout)
+  else:
+    r = requests.request(method, url, data=all_params, files=files, timeout=timeout)
+  try:
+    data = r.json()
+  except Exception:
+    raise MetaError(f"Meta 回應格式錯誤（HTTP {r.status_code}）")
+  if isinstance(data, dict) and data.get("error"):
+    err = data["error"]
+    msg = err.get("error_user_msg") or err.get("message") or "Meta 錯誤"
+    if err.get("code") == 190:
+      msg = f"Meta 發文權限碼已失效，請重新授權（{msg}）"
+    raise MetaError(msg)
+  return data
+
+
+def fb_upload_photo(jpeg, scheduled=False):
+  """上傳到粉絲專頁成為「不公開的照片」；排程貼文用 temporary。"""
+  params = {"published": "false"}
+  if scheduled:
+    params["temporary"] = "true"
+  data = graph("POST", f"{META_PAGE_ID}/photos", params,
+               files={"source": ("photo.jpg", jpeg, "image/jpeg")}, timeout=120)
+  return data["id"]
+
+
+def fb_photo_url(photo_id):
+  imgs = graph("GET", photo_id, {"fields": "images"}).get("images") or []
+  if not imgs:
+    raise MetaError("取不到照片網址")
+  return max(imgs, key=lambda x: x.get("width", 0))["source"]
+
+
+def fb_create_post(message, photo_ids, when_ts=None):
+  params = {"message": message}
+  for i, pid in enumerate(photo_ids):
+    params[f"attached_media[{i}]"] = json.dumps({"media_fbid": pid})
+  if when_ts:
+    params.update(published="false", scheduled_publish_time=str(int(when_ts)),
+                  unpublished_content_type="SCHEDULED")
+  post_id = graph("POST", f"{META_PAGE_ID}/feed", params)["id"]
+  link = ""
+  if not when_ts:
+    try:
+      link = graph("GET", post_id, {"fields": "permalink_url"}).get("permalink_url", "")
+    except MetaError:
+      pass
+  return post_id, link
+
+
+def ig_wait(container_id, tries=20):
+  for _ in range(tries):
+    code = graph("GET", container_id, {"fields": "status_code"}).get("status_code")
+    if code == "FINISHED":
+      return
+    if code in ("ERROR", "EXPIRED"):
+      raise MetaError(f"IG 處理照片失敗（{code}）")
+    time.sleep(2)
+  raise MetaError("IG 處理照片逾時")
+
+
+def ig_publish_urls(caption, urls):
+  if len(urls) == 1:
+    cid = graph("POST", f"{META_IG_ID}/media", {"image_url": urls[0], "caption": caption})["id"]
+  else:
+    kids = [graph("POST", f"{META_IG_ID}/media", {"image_url": u, "is_carousel_item": "true"})["id"]
+            for u in urls]
+    for k in kids:
+      ig_wait(k)
+    cid = graph("POST", f"{META_IG_ID}/media",
+                {"media_type": "CAROUSEL", "children": ",".join(kids), "caption": caption})["id"]
+  ig_wait(cid)
+  media_id = graph("POST", f"{META_IG_ID}/media_publish", {"creation_id": cid})["id"]
+  link = ""
+  try:
+    link = graph("GET", media_id, {"fields": "permalink"}).get("permalink", "")
+  except MetaError:
+    pass
+  return media_id, link
+
+
+def publish_ig_now(caption, images):
+  """照片先上傳成 FB 不公開照片當中轉，IG 從那裡抓圖；發完刪掉中轉照片。"""
+  temp = []
+  try:
+    for b in images[:MAX_SELECTED]:
+      temp.append(fb_upload_photo(b))
+    urls = [fb_photo_url(p) for p in temp]
+    media_id, link = ig_publish_urls(caption, urls)
+    return {"status": "ok", "link": link, "id": media_id}
+  finally:
+    for p in temp:
+      try:
+        graph("DELETE", p)
+      except Exception:
+        pass
+
+
+def publish_fb_now(message, images):
+  ids = [fb_upload_photo(b) for b in images[:MAX_FB_PHOTOS]]
+  post_id, link = fb_create_post(message, ids)
+  return {"status": "ok", "link": link, "id": post_id}
+
+
+def schedule_fb(message, images, when_ts):
+  ids = [fb_upload_photo(b, scheduled=True) for b in images[:MAX_FB_PHOTOS]]
+  post_id, _ = fb_create_post(message, ids, when_ts)
+  return {"status": "scheduled", "link": "", "id": post_id}
+
+
+def schedule_ig(record_id, caption, images, when_ts):
+  ok, data = script_post("schedule_ig", {
+      "record_id": record_id,
+      "when": int(when_ts) * 1000,
+      "caption": caption,
+      "images": [base64.b64encode(b).decode() for b in images[:MAX_SELECTED]],
+      "meta": {"token": META_TOKEN, "page_id": META_PAGE_ID, "ig_id": META_IG_ID, "ver": META_VER},
+  }, timeout=180)
+  if not ok:
+    raise MetaError(f"IG 排程存入失敗：{data}")
+  return {"status": "scheduled", "link": "", "id": record_id}
+
+
+def run_platform(platform, job):
+  """執行單一平台；失敗不影響另一個平台。"""
+  try:
+    if platform == "ig":
+      if job["when_ts"]:
+        return schedule_ig(job["record_id"], job["ig_text"], job["ig_images"], job["when_ts"])
+      return publish_ig_now(job["ig_text"], job["ig_images"])
+    if job["when_ts"]:
+      return schedule_fb(job["fb_text"], job["fb_images"], job["when_ts"])
+    return publish_fb_now(job["fb_text"], job["fb_images"])
+  except Exception as e:
+    return {"status": "fail", "error": str(e), "link": "", "id": ""}
+
+
+def overall_status(pub):
+  states = [pub[p]["status"] for p in ("ig", "fb") if p in pub]
+  if all(s == "scheduled" for s in states):
+    return "已排程"
+  if all(s == "ok" for s in states):
+    return "已發布"
+  if any(s in ("ok", "scheduled") for s in states):
+    return "部分成功"
+  return "失敗"
+
+
 # =========================================================================
 # 🧠 AI 呼叫（模型防禦鏈 + JSON）
 # =========================================================================
@@ -797,7 +1007,7 @@ with btn_col2:
     st.session_state.reset_counter += 1
     for k in list(st.session_state.keys()):
       if k in ("result", "consent_ok", "sticker_kind") or k.startswith(
-          ("edit_", "adopt_", "ver_pick", "rw_", "cover_")):
+          ("edit_", "adopt_", "ver_pick", "rw_", "cover_", "pub_", "fbx_")):
         del st.session_state[k]
     st.rerun()
 
@@ -865,10 +1075,16 @@ if generate_btn:
                 "fb_edit": None,
             }],
             "adopted": [],
+            "n_uploaded": len(uploaded_files),
+            "picked": picked,
+            "extras": [],
+            "thumbs": {},
+            "pub": None,
         }
         st.session_state.ver_pick = 0
         for k in list(st.session_state.keys()):
-          if k.startswith(("edit_ig_", "edit_fb_", "cover_")) or k in ("consent_ok", "sticker_kind"):
+          if k.startswith(("edit_ig_", "edit_fb_", "cover_", "pub_", "fbx_")) or k in (
+              "consent_ok", "sticker_kind"):
             del st.session_state[k]
       except Exception as e:
         st.error(f"系統偵測到錯誤：{e}")
@@ -937,9 +1153,13 @@ if result:
     ) or "笑臉"
   kind = STICKERS[kind_label]
 
+  extras = result.setdefault("extras", [])
+
   def _set_all(on):
     for j, p in enumerate(photos):
       st.session_state[f"cover_{j}"] = list(range(1, len(p["faces"]) + 1)) if on else []
+    for x in extras:
+      st.session_state[f"cover_x{x['key']}"] = list(range(1, len(x["faces"]) + 1)) if on else []
     st.session_state.consent_ok = False
 
   def _covers_changed():
@@ -976,35 +1196,123 @@ if result:
       else:
         st.caption("沒有偵測到臉，不用處理")
 
+  # ---------- ➕ FB 加選照片（收合式，平常不執行）----------
+  max_extra = MAX_FB_PHOTOS - len(photos)
+  if max_extra > 0 and st.toggle(
+      f"➕ FB 想多放幾張照片？（選用，FB 合計最多 {MAX_FB_PHOTOS} 張）", key="fbx_open"):
+    with st.container(border=True):
+      files_ok = uploaded_files and len(uploaded_files) == result.get("n_uploaded")
+      used = set(result.get("picked", [])) | {x["src"] for x in extras}
+      candidates = [i for i in range(result.get("n_uploaded", 0)) if i not in used] if files_ok else []
+      if not files_ok:
+        st.caption("原始照片已被清除或更換，無法加選。請重新上傳同一批照片後再試。")
+      elif not candidates:
+        st.caption("所有上傳的照片都已經用上了。")
+      else:
+        room = max_extra - len(extras)
+        st.caption(f"勾選要加給 FB 的照片（還可以加 {room} 張）。加入後會自動偵測臉部，並一起進入肖像權確認。")
+        thumbs = result.setdefault("thumbs", {})
+        tcols = st.columns(6)
+        chosen = []
+        for n, idx in enumerate(candidates):
+          if idx not in thumbs:
+            t = load_image(uploaded_files[idx], max_size=240)
+            thumbs[idx] = to_jpeg(t, 80)
+          with tcols[n % 6]:
+            st.image(thumbs[idx], width="stretch")
+            if st.checkbox(f"#{idx + 1}", key=f"fbx_pick_{idx}"):
+              chosen.append(idx)
+        too_many = len(chosen) > room
+        if too_many:
+          st.warning(f"最多只能再加 {room} 張，請減少勾選。")
+        if st.button(f"加入 FB（{len(chosen)} 張）並偵測臉部", disabled=not chosen or too_many or not api_key,
+                     key="fbx_add"):
+          with st.spinner("正在偵測加選照片中的臉..."):
+            try:
+              imgs = [load_image(uploaded_files[i], max_size=1024) for i in chosen]
+              prompt = (
+                  f"以下共有 {len(chosen)} 張照片（依序編號 1～{len(chosen)}）。"
+                  "請對每一張照片各給一筆 faces：image 填編號，faces 列出所有看得到的人臉位置"
+                  "（孩子與大人、側臉、遠處小臉都要），座標用 0～1000 的 ymin、xmin、ymax、xmax。"
+                  "只要標出位置，不要辨識是誰；沒有臉就給空陣列。"
+              )
+              data, _ = call_gemini(api_key, [prompt] + imgs, FacesOnly, st.empty())
+              fmap = {}
+              for item in data.get("faces", []) or []:
+                try:
+                  fmap[int(item["image"]) - 1] = [
+                      (f["ymin"], f["xmin"], f["ymax"], f["xmax"]) for f in item.get("faces", [])]
+                except Exception:
+                  continue
+              for n, idx in enumerate(chosen):
+                base = make_base_photo(uploaded_files[idx], result["blur"], fmap.get(n, []))
+                base.update(src=idx, key=uuid.uuid4().hex[:8])
+                extras.append(base)
+                st.session_state.pop(f"fbx_pick_{idx}", None)
+              st.session_state.consent_ok = False
+              st.rerun()
+            except Exception as e:
+              st.error(f"加選照片時發生錯誤：{e}")
+
+  extra_finals = []
+  if extras:
+    st.markdown(f"#### ➕ FB 加選照片（{len(extras)} 張，只會發到 FB）")
+    xcols = st.columns(2)
+    for j, x in enumerate(list(extras)):
+      ck = f"cover_x{x['key']}"
+      covers = tuple(sorted(st.session_state.get(ck, []) or []))
+      fkey = ("x", x["key"], covers, kind, "final")
+      if fkey not in cache:
+        cache[fkey] = render_photo(x, covers, kind, result["watermark"])
+      extra_finals.append(cache[fkey])
+      pkey = ("x", x["key"], covers, kind, "preview")
+      if pkey not in cache:
+        cache[pkey] = render_preview(cache[fkey], x["faces"], covers)
+      with xcols[j % 2]:
+        st.image(cache[pkey], width="stretch",
+                 caption=f"FB 第 {len(photos) + j + 1} 張（原 #{x['src'] + 1}）｜偵測到 {len(x['faces'])} 張臉")
+        if x["faces"]:
+          st.pills("要遮的臉", options=list(range(1, len(x["faces"]) + 1)), selection_mode="multi",
+                   key=ck, on_change=_covers_changed)
+        else:
+          st.caption("沒有偵測到臉，不用處理")
+        if st.button("✖ 從 FB 移除", key=f"fbx_del_{x['key']}"):
+          extras.remove(x)
+          st.session_state.pop(ck, None)
+          st.rerun()
+
   st.warning(
       "⚠️ AI 可能漏掉很小、側面或被擋住的臉，請逐張確認。"
       "若有漏標又不能公開的孩子，建議換掉那張照片。"
   )
   n_covered = sum(len(st.session_state.get(f"cover_{i}", []) or []) for i in range(len(photos)))
+  n_covered += sum(len(st.session_state.get(f"cover_x{x['key']}", []) or []) for x in extras)
   st.caption(f"目前已遮住 {n_covered} 張臉。")
   consent = st.checkbox("我已確認本篇照片中，沒有未同意公開的孩子", key="consent_ok")
 
   if not consent:
     st.info("勾選上方確認後，才會出現下載按鈕與可儲存的照片。")
   else:
+    all_finals = finals + extra_finals
     st.markdown("### 🏆 可下載的完成照片")
     d1, d2 = st.columns(2)
     with d1:
       st.download_button(
-          f"📦 下載 ZIP（{len(finals)} 張，電腦用）",
-          data=build_zip(finals, activity),
+          f"📦 下載 ZIP（{len(all_finals)} 張，電腦用）",
+          data=build_zip(all_finals, activity),
           file_name=f"{datetime.now(TZ):%Y%m%d}_{activity}.zip",
           mime="application/zip",
           on_click="ignore",
           width="stretch",
       )
     with d2:
-      st.html(share_widget_html(finals, activity), unsafe_allow_javascript=True)
+      st.html(share_widget_html(all_finals, activity), unsafe_allow_javascript=True)
     st.caption("💡 手機也可以「長按」下方照片，選擇「儲存影像」。照片依建議發文順序排列。")
     img_cols = st.columns(2)
     mode_note = "1080×1350" if result["blur"] else "原圖比例"
-    for i, data in enumerate(finals):
-      img_cols[i % 2].image(data, width="stretch", caption=f"🏆 建議擺在第 {i + 1} 張（{mode_note}）")
+    for i, data in enumerate(all_finals):
+      tag = "（FB 加選）" if i >= len(finals) else ""
+      img_cols[i % 2].image(data, width="stretch", caption=f"🏆 建議擺在第 {i + 1} 張{tag}（{mode_note}）")
 
   # ---------- 文案 ----------
   st.markdown("---")
@@ -1092,6 +1400,131 @@ if result:
       disabled=not api_key,
   )
 
+  # ---------- 📤 發布到 IG／FB ----------
+  st.markdown("---")
+  st.markdown("### 📤 發布到 Instagram／Facebook")
+  pub = result.get("pub")
+  if not meta_ready():
+    st.caption("ℹ️ 尚未串接 Meta（META_TOKEN／META_PAGE_ID／META_IG_ID），目前請用上方的複製與下載手動發文。")
+  elif not PUBLISH_PASSWORD:
+    st.caption("ℹ️ 尚未設定發布密碼（PUBLISH_PASSWORD）。為了安全，發布功能暫時關閉。")
+  elif not consent:
+    st.info("請先完成上方的肖像權確認並勾選，才能發布。")
+  elif not st.session_state.get("publish_ok"):
+    u1, u2 = st.columns([3, 1])
+    with u1:
+      pw = st.text_input("🔐 發布密碼（只有指定人員可以發布）", type="password", key="pub_pw")
+    with u2:
+      st.write("")
+      unlock = st.button("解鎖發布", width="stretch", key="pub_unlock")
+    if unlock:
+      if pw and hmac.compare_digest(pw, PUBLISH_PASSWORD):
+        st.session_state.publish_ok = True
+        st.rerun()
+      else:
+        st.error("發布密碼不正確。")
+  elif pub:
+    # 已經發布／排程過：顯示結果，失敗的平台可單獨重試（避免重複發文）
+    names = {"ig": "Instagram", "fb": "Facebook"}
+    for p in ("ig", "fb"):
+      if p not in pub:
+        continue
+      r = pub[p]
+      if r["status"] == "ok":
+        st.success(f"✅ {names[p]} 已發布" + (f"：[打開貼文]({r['link']})" if r.get("link") else ""))
+      elif r["status"] == "scheduled":
+        st.success(f"🕘 {names[p]} 已排程：{pub['when_label']}")
+      else:
+        st.error(f"❌ {names[p]} 失敗：{r.get('error', '')}")
+        if st.button(f"🔁 重試 {names[p]}", key=f"pub_retry_{p}"):
+          with st.spinner(f"正在重試 {names[p]}..."):
+            pub[p] = run_platform(p, pub["job"])
+          link_field = "IG 連結" if p == "ig" else "FB 連結"
+          fields = {"狀態": overall_status(pub)}
+          if pub[p].get("link"):
+            fields[link_field] = pub[p]["link"]
+          if p == "fb" and pub[p].get("id"):
+            fields["FB貼文ID"] = pub[p]["id"]
+          if pub.get("recorded"):
+            script_post("update", {"record_id": pub["job"]["record_id"], "fields": fields})
+          st.rerun()
+    st.caption("這一篇已經送出過了。要發新的一篇，請按上方「一鍵清空 / 開始下一篇」。")
+  else:
+    fb_images = finals + extra_finals
+    t1, t2 = st.columns(2)
+    to_ig = t1.checkbox(f"Instagram（{min(len(finals), MAX_SELECTED)} 張）", value=True, key="pub_ig")
+    to_fb = t2.checkbox(f"Facebook（{len(fb_images)} 張）", value=True, key="pub_fb")
+    mode = st.radio("發布時間", ["⚡ 立即發布", "🕘 排程"], horizontal=True, key="pub_mode")
+    now = datetime.now(TZ)
+    when = None
+    range_ok = True
+    if mode == "🕘 排程":
+      default = (now + timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)  # 至少 1 小時後的整點
+      w1, w2 = st.columns(2)
+      day = w1.date_input("日期", value=default.date(), min_value=now.date(),
+                          max_value=(now + timedelta(days=30)).date(), key="pub_date")
+      tm = w2.time_input("時間（台灣時間）", value=default.time(), step=timedelta(minutes=5), key="pub_time")
+      when = datetime.combine(day, tm).replace(tzinfo=TZ)
+      range_ok = now + timedelta(minutes=10) <= when <= now + timedelta(days=30)
+      if not range_ok:
+        st.warning("排程時間需要在 10 分鐘後到 30 天內。")
+      else:
+        st.caption("FB 由 Meta 準時發布；IG 由排程鬧鐘每 5 分鐘檢查一次，可能晚幾分鐘發出。")
+    when_label = f"{when:%Y-%m-%d %H:%M}" if when else "立即"
+
+    with st.container(border=True):
+      st.markdown("**🔍 發布前預覽**")
+      plats = "、".join([n for n, on in (("Instagram", to_ig), ("Facebook", to_fb)) if on]) or "（未選擇）"
+      st.markdown(f"- 平台：{plats}\n- 時間：{when_label}\n"
+                  f"- 照片：IG {min(len(finals), MAX_SELECTED)} 張、FB {len(fb_images)} 張"
+                  "（順序同上方照片，已遮臉、已加 Logo）")
+      if to_ig:
+        st.markdown("**IG 文案**")
+        st.text(full_text(ver, "ig"))
+      if to_fb:
+        st.markdown("**FB 文案**")
+        st.text(full_text(ver, "fb"))
+    sure = st.checkbox("我已檢查預覽，確認要公開發布", key="pub_sure")
+    go = st.button("📤 確認發布" if not when else "🕘 確認排程", type="primary", width="stretch",
+                   disabled=not (sure and (to_ig or to_fb) and range_ok), key="pub_go")
+    if go:
+      s = result["settings"]
+      job = {
+          "record_id": f"{now:%Y%m%d%H%M}-{uuid.uuid4().hex[:6]}",
+          "when_ts": int(when.timestamp()) if when else None,
+          "ig_text": full_text(ver, "ig"),
+          "fb_text": full_text(ver, "fb"),
+          "ig_images": finals[:MAX_SELECTED],
+          "fb_images": fb_images[:MAX_FB_PHOTOS],
+      }
+      new_pub = {"job": job, "when_label": when_label}
+      with st.status("正在送出到 Meta...", expanded=True) as status_box:
+        for p, on, label in (("fb", to_fb, "Facebook"), ("ig", to_ig, "Instagram")):
+          if on:
+            st.write(f"處理 {label}...")
+            new_pub[p] = run_platform(p, job)
+        final_state = overall_status(new_pub)
+        status_box.update(label=f"完成：{final_state}", state="complete" if final_state != "失敗" else "error")
+      if final_state != "失敗" and history_enabled():
+        ok, _ = script_post("record", {
+            "record_id": job["record_id"],
+            "date": f"{now:%Y-%m-%d %H:%M}",
+            "keywords": s["keywords"], "post_type": s["post_type"], "text_length": s["text_length"],
+            "ig": job["ig_text"] if to_ig else "", "fb": job["fb_text"] if to_fb else "",
+            "hashtags": " ".join(ver["hashtags"]), "version": f"版本 {vid + 1}",
+            "status": final_state,
+            "platforms": "、".join([n for n, on in (("IG", to_ig), ("FB", to_fb)) if on]),
+            "schedule": when_label if when else "",
+            "ig_link": new_pub.get("ig", {}).get("link", ""),
+            "fb_link": new_pub.get("fb", {}).get("link", ""),
+            "fb_post_id": new_pub.get("fb", {}).get("id", ""),
+        })
+        new_pub["recorded"] = ok
+        if ok and vid not in result["adopted"]:
+          result["adopted"].append(vid)
+      result["pub"] = new_pub
+      st.rerun()
+
   st.markdown("### 💡 AI 小編挑圖建議")
   st.info(result["suggestion"] or "無提供建議")
   with st.expander("🔍 檢視照片摘要與 AI 原始回應 (除錯與備份用)"):
@@ -1101,9 +1534,59 @@ if result:
     st.code(result["raw"][-1], language="json", wrap_lines=True)
 
 # =========================================================================
-# 🗂️ 發文歷史紀錄
+# 🗓️ 已排程的貼文（打開才讀取，避免每次操作都連線）
 # =========================================================================
 st.markdown("---")
+if meta_ready() and history_enabled() and st.toggle("🗓️ 顯示已排程的貼文", key="sched_open"):
+  with st.container(border=True):
+    items, sched_err = fetch_scheduled()
+    if items is None:
+      st.warning(f"讀取排程清單失敗：{sched_err}")
+    elif not items:
+      st.caption("目前沒有排程中的貼文。")
+    else:
+      can_cancel = bool(st.session_state.get("publish_ok"))
+      if not can_cancel:
+        st.caption("🔐 輸入發布密碼後才能取消排程。")
+        sp1, sp2 = st.columns([3, 1])
+        with sp1:
+          spw = st.text_input("發布密碼", type="password", key="sched_pw")
+        with sp2:
+          st.write("")
+          if st.button("解鎖", key="sched_unlock", width="stretch"):
+            if spw and PUBLISH_PASSWORD and hmac.compare_digest(spw, PUBLISH_PASSWORD):
+              st.session_state.publish_ok = True
+              st.rerun()
+            else:
+              st.error("發布密碼不正確。")
+      for it in items:
+        c1, c2 = st.columns([4, 1])
+        done = []
+        if it.get("ig_link"):
+          done.append("IG 已發出")
+        if it.get("fb_link"):
+          done.append("FB 已發出")
+        c1.markdown(f"**{it.get('when', '')}**｜{it.get('keywords') or '（未填關鍵字）'}｜"
+                    f"{it.get('platforms', '')}" + (f"（{'、'.join(done)}）" if done else ""))
+        if can_cancel and c2.button("取消排程", key=f"sched_cancel_{it['record_id']}", width="stretch"):
+          msgs = []
+          if it.get("fb_post_id") and not it.get("fb_link"):
+            try:
+              graph("DELETE", it["fb_post_id"])
+            except Exception as e:
+              msgs.append(f"FB 取消失敗：{e}")
+          ok, err = script_post("cancel", {"record_id": it["record_id"]})
+          if not ok:
+            msgs.append(f"IG 排程取消失敗：{err}")
+          if msgs:
+            st.error("；".join(msgs))
+          else:
+            st.success("已取消這篇排程。")
+            st.rerun()
+
+# =========================================================================
+# 🗂️ 發文歷史紀錄
+# =========================================================================
 with st.expander("🗂️ 最近 10 篇發文紀錄"):
   if not history_enabled():
     st.caption("尚未設定 Google 試算表。設定方式請見功能清單「發文歷史設定」章節。")
@@ -1114,13 +1597,20 @@ with st.expander("🗂️ 最近 10 篇發文紀錄"):
   else:
     table = []
     for row in history_rows:
-      row = list(row) + [""] * 8
+      row = list(row) + [""] * 15
       table.append({
           "日期": str(row[0])[:16],
           "活動關鍵字": row[1],
-          "類型": row[2],
-          "IG 文案": re.sub(r"\s+", " ", str(row[4]))[:60],
-          "Hashtag": row[6],
+          "狀態": row[8] or "已採用",
+          "IG 文案": re.sub(r"\s+", " ", str(row[4] or row[5]))[:60],
+          "IG 連結": row[11] if str(row[11]).startswith("http") else None,
+          "FB 連結": row[12] if str(row[12]).startswith("http") else None,
       })
-    st.dataframe(table, hide_index=True, width="stretch")
+    st.dataframe(
+        table, hide_index=True, width="stretch",
+        column_config={
+            "IG 連結": st.column_config.LinkColumn("IG 連結", display_text="打開"),
+            "FB 連結": st.column_config.LinkColumn("FB 連結", display_text="打開"),
+        },
+    )
     st.caption("AI 撰寫新文案時，會自動參考這些紀錄避免重複。")
