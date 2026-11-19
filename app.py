@@ -1,12 +1,17 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器
-# Current Version: v5.0.0 (2026.11.18 Build)｜🟣 Claude 協作版
+# Current Version: v5.1.0 (2026.11.19 Build)｜🟣 Claude 協作版
 #
 # 🧬 開發歷程 (AI 協作夥伴):
 #   ├─ v3.0.0 ~ v3.2.0 ── 🔵 Google Gemini 協作開發
 #   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發
 #
 # 📄 變更日誌 (Changelog):
+# [2026.11.19] v5.1.0 🟣Claude - 📋 相簿截圖讀取：
+#   新增「相簿說明截圖（選填）」上傳框：放上好校通 App 相簿頁截圖，立即讀出相簿標題與老師說明，
+#   自動填入（接在後面，不覆蓋）活動關鍵字，可先看先改；此框的圖一律只當文字來源，不會進貼文；
+#   照片框若混入 App／手機畫面截圖，AI 自動挑出、不選入貼文、不做遮臉與 Logo，文字改作文案參考並提示；
+#   文案一律不寫孩子名字（班級、活動名稱照常）；上傳超過 20 張時提示「建議挑 15～20 張」。
 # [2026.11.18] v5.0.0 🟣Claude - 📤 Meta 一鍵發文：
 #   發布密碼（PUBLISH_PASSWORD）保護發布區；IG／FB 可勾選、預設兩個都發；
 #   立即發布或排程（10 分鐘～30 天）：FB 由 Meta 排程，IG 由 Google Apps Script 每 5 分鐘代發；
@@ -55,12 +60,13 @@ from google.genai import types as genai_types
 from PIL import Image, ImageFilter, ImageOps
 from pydantic import BaseModel
 
-APP_VERSION = "v5.0.0"
+APP_VERSION = "v5.1.0"
 MAX_FB_PHOTOS = 20
 STICKERS = {"笑臉": "smile", "星星": "star", "愛心": "heart", "花朵": "flower"}
 MAX_SELECTED = 10
 MAX_VERSIONS = 5
 MAX_HASHTAGS = 5
+PHOTO_HINT_LIMIT = 20  # 超過此張數提示（不阻擋）
 BRAND_TAGS = ["#小鳥幼兒園", "#everythingforkids"]
 OUT_W, OUT_H = 1080, 1350  # IG 直式 4:5 標準尺寸
 TZ = ZoneInfo("Asia/Taipei")
@@ -146,6 +152,8 @@ class PhotoFaces(BaseModel):
 
 
 class AnalysisResult(BaseModel):
+  screenshots: list[int]
+  screenshot_text: str
   selected_images: list[int]
   faces: list[PhotoFaces]
   photo_summary: str
@@ -153,6 +161,12 @@ class AnalysisResult(BaseModel):
   fb_text: str
   content_hashtags: list[str]
   suggestion: str
+
+
+class AlbumInfo(BaseModel):
+  is_album_screenshot: bool
+  title: str
+  description: str
 
 
 class FacesOnly(BaseModel):
@@ -806,14 +820,24 @@ def settings_block(s):
 2. content_hashtags：給 3 個與照片內容相關、台灣在地化的 hashtag（例如活動主題、#台中幼兒園 這類），
    不要包含 #小鳥幼兒園、#everythingforkids（系統會自動加入）。IG 規定整篇最多 5 個 hashtag。
 3. 互動克制：以自然敘事為主，除非上方有勾選互動目標，否則不要加入「大家覺得呢？」這類要求互動的句子。
+4. 孩子名字保護：文案一律「不寫」任何孩子的名字（中文名、英文名、小名、綽號都不行），
+   需要時用「孩子們」「小朋友」「寶貝們」代替；班級名稱、活動名稱可以照常使用。
 """
 
 
 def build_analysis_prompt(n_photos, s, history_rows):
   return f"""{BRAND_CONTEXT}
 {settings_block(s)}{history_prompt_block(history_rows)}
-【任務 1：IG 智能挑圖】目前共上傳 {n_photos} 張照片（第一張序號為 1，以此類推）。
-1. 若總數大於 10 張，必須且只能精選「剛好 10 張」；若小於或等於 10 張，列出全部序號。
+【任務 0：辨識截圖（最優先）】目前共上傳 {n_photos} 張圖（第一張序號為 1，以此類推）。
+逐張判斷：若是「App 或手機的畫面截圖」（例如好校通 App 的相簿頁、有狀態列、標題列、按鈕、
+文字介面的畫面），而不是相機拍攝的上課／活動照片，就把序號列在 screenshots。
+- 截圖「絕對不能」放進 selected_images，也不要為截圖標臉部位置。
+- screenshot_text：讀出截圖中的相簿標題與老師的說明文字（忽略按鈕、日期以外的介面文字、張數等），
+  孩子的名字一律略過；沒有截圖時給空字串、screenshots 給空陣列。
+- 截圖中讀到的相簿標題與說明，請當作「活動關鍵字 / 描述」的重要參考來撰寫文案。
+
+【任務 1：IG 智能挑圖】只從「不是截圖」的照片中挑選。
+1. 若照片總數大於 10 張，必須且只能精選「剛好 10 張」；若小於或等於 10 張，列出全部序號。
 2. 多樣性原則：避免同一個孩子重複出現太多次；畫面要分散（遠景呈現場景、中景呈現互動、特寫呈現專注表情）。
 3. selected_images：依「建議發文順序」排列的照片序號（整數）。
 
@@ -829,6 +853,58 @@ image 填該照片的原序號，faces 列出照片中所有看得到的人臉�
 遠處很小的臉、被部分遮住的臉）。座標用 0～1000 的相對位置：ymin、xmin、ymax、xmax。
 只要標出位置，不要辨識或猜測是誰。照片中看不到任何臉時，faces 給空陣列。
 """
+
+
+ALBUM_READ_PROMPT = """這是一張幼兒園「好校通」App 或後台的相簿頁面截圖。請讀出：
+1. title：相簿標題（例如「115.11.18 體能 / 登山探險家」，保留原本的日期與文字）。
+2. description：老師寫的相簿說明文字（完整保留內容，但略過按鈕、張數、上傳日期、
+   「照片僅提供在電腦或手機上瀏覽」這類系統提示文字）。
+3. is_album_screenshot：這張圖確實是 App／網頁畫面截圖、而且讀得到相簿標題或說明時為 true；
+   若是一般活動照片或讀不到任何相簿文字，為 false。
+規則：孩子的名字（中文名、英文名、小名）一律略過不寫；看不到的部分不要猜測或自行補寫。
+沒有說明文字時 description 給空字串。"""
+
+
+def current_api_key():
+  return EMBEDDED_API_KEY or st.session_state.get("api_key_input", "")
+
+
+def merge_keywords(existing, addition):
+  """把讀到的文字接在原本關鍵字後面（不覆蓋、不重複）。"""
+  existing = (existing or "").strip()
+  addition = (addition or "").strip()
+  if not addition or addition in existing:
+    return existing
+  return f"{existing}\n{addition}" if existing else addition
+
+
+def on_album_shot_change(rc):
+  """相簿截圖一放上去就讀取，結果填入活動關鍵字（在 callback 中修改，才不會被元件鎖住）。"""
+  f = st.session_state.get(f"album_shot_{rc}")
+  if f is None:
+    st.session_state.pop("album_info", None)
+    return
+  key = current_api_key()
+  if not key:
+    st.session_state.album_info = {"error": "請先在步驟 1 輸入 Gemini API Key，再放截圖。"}
+    return
+  try:
+    img = load_image(f, max_size=1600)
+    data, _ = call_gemini(key, [ALBUM_READ_PROMPT, img], AlbumInfo)
+    del img
+    gc.collect()
+    title = (data.get("title") or "").strip()
+    desc = (data.get("description") or "").strip()
+    if not data.get("is_album_screenshot") or not (title or desc):
+      st.session_state.album_info = {
+          "error": "這張圖讀不到相簿標題或說明，請確認截到的是相簿頁上方有標題和說明的畫面。"}
+      return
+    text = "｜".join(x for x in (title, desc) if x)
+    kw_key = f"keywords_{rc}"
+    st.session_state[kw_key] = merge_keywords(st.session_state.get(kw_key, ""), text)
+    st.session_state.album_info = {"title": title, "desc": desc}
+  except Exception as e:
+    st.session_state.album_info = {"error": f"讀取截圖時發生錯誤：{e}"}
 
 
 def build_rewrite_prompt(summary, s, current, target, direction, history_rows):
@@ -931,7 +1007,7 @@ if EMBEDDED_API_KEY:
   api_key = EMBEDDED_API_KEY
   st.success("✅ 已自動由雲端安全保險箱（Secrets）載入您綁定的 API 金鑰！")
 else:
-  api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password")
+  api_key = st.text_input("🔑 請貼上您的 Google Gemini API Key", type="password", key="api_key_input")
   if not api_key:
     st.warning("請先輸入金鑰以解鎖 AI 功能。")
 
@@ -986,6 +1062,26 @@ with opt2:
       disabled=load_logo() is None,
       help=None if load_logo() is not None else "找不到 logo.png，無法加浮水印",
   )
+st.file_uploader(
+    "📋 相簿說明截圖（選填）：放一張好校通相簿頁的截圖，自動讀出標題與老師說明，填進活動關鍵字",
+    type=["png", "jpg", "jpeg", "webp"],
+    key=f"album_shot_{rc}",
+    on_change=on_album_shot_change,
+    args=(rc,),
+    help="這裡的圖只用來讀文字，絕對不會被選進貼文。",
+)
+_album = st.session_state.get("album_info")
+if _album and st.session_state.get(f"album_shot_{rc}") is not None:
+  if _album.get("error"):
+    st.warning(f"⚠️ {_album['error']}")
+  else:
+    lines = []
+    if _album.get("title"):
+      lines.append(f"**相簿標題**：{_album['title']}")
+    if _album.get("desc"):
+      lines.append(f"**老師說明**：{_album['desc']}")
+    st.success("📋 已讀取相簿截圖，並填入上方「活動關鍵字」（可修改）：\n\n" + "\n\n".join(lines))
+
 uploaded_files = st.file_uploader(
     "請拖曳或從手機相簿選擇多張照片 (數量無上限)",
     type=["png", "jpg", "jpeg", "webp"],
@@ -996,6 +1092,8 @@ if uploaded_files:
   st.success(
       f"🎉 已成功接收 {len(uploaded_files)} 張照片！交給 AI 為您依據多樣性原則精選最佳畫面。"
   )
+  if len(uploaded_files) > PHOTO_HINT_LIMIT:
+    st.info(f"💡 照片越多越慢、費用越高，建議挑 15～20 張（目前 {len(uploaded_files)} 張，仍可直接產生）。")
 
 # --- 🚀 執行與操作按鈕區 ---
 st.markdown("---")
@@ -1006,7 +1104,7 @@ with btn_col2:
   if st.button("🔄 一鍵清空 / 開始下一篇", width="stretch"):
     st.session_state.reset_counter += 1
     for k in list(st.session_state.keys()):
-      if k in ("result", "consent_ok", "sticker_kind") or k.startswith(
+      if k in ("result", "consent_ok", "sticker_kind", "album_info") or k.startswith(
           ("edit_", "adopt_", "ver_pick", "rw_", "cover_", "pub_", "fbx_")):
         del st.session_state[k]
     st.rerun()
@@ -1032,15 +1130,29 @@ if generate_btn:
         del api_images
         gc.collect()
 
+        shots = set()
+        for n in data.get("screenshots", []) or []:
+          try:
+            i = int(n) - 1
+          except (TypeError, ValueError):
+            continue
+          if 0 <= i < len(uploaded_files):
+            shots.add(i)
         picked = []
         for n in data.get("selected_images", []):
-          idx = int(n) - 1
-          if 0 <= idx < len(uploaded_files) and idx not in picked:
+          try:
+            idx = int(n) - 1
+          except (TypeError, ValueError):
+            continue
+          if 0 <= idx < len(uploaded_files) and idx not in picked and idx not in shots:
             picked.append(idx)
           if len(picked) >= MAX_SELECTED:
             break
         if not picked:
-          picked = list(range(min(len(uploaded_files), MAX_SELECTED)))
+          picked = [i for i in range(len(uploaded_files)) if i not in shots][:MAX_SELECTED]
+        if not picked:
+          raise Exception("上傳的圖看起來都是 App／手機畫面截圖，沒有可以發文的活動照片，請再加入照片。")
+        shot_text = (data.get("screenshot_text") or "").strip() if shots else ""
 
         face_map = {}
         for item in data.get("faces", []) or []:
@@ -1062,7 +1174,10 @@ if generate_btn:
             "render_cache": {},
             "blur": enable_blur,
             "activity": safe_name(settings["keywords"], settings["post_type"]),
-            "summary": data.get("photo_summary", ""),
+            "summary": data.get("photo_summary", "") + (
+                f"\n\n【相簿截圖文字】{shot_text}" if shot_text else ""),
+            "shots": sorted(i + 1 for i in shots),
+            "shot_text": shot_text,
             "suggestion": data.get("suggestion", ""),
             "settings": settings,
             "raw": [raw],
@@ -1141,6 +1256,10 @@ if result:
   if len(cache) > 120:
     cache.clear()
 
+  if result.get("shots"):
+    nums = "、".join(f"第 {n} 張" for n in result["shots"])
+    st.info(f"📋 偵測到 {len(result['shots'])} 張相簿截圖（{nums}），已改作文字參考，不會放進貼文。"
+            + (f"\n\n讀到的文字：{result['shot_text']}" if result.get("shot_text") else ""))
   st.markdown("### 🛡️ AI 嚴選照片｜肖像權確認")
   st.caption(
       "照片上的 ① ② ③ 是 AI 找到的臉。若有未同意公開的孩子，請按該照片下方的號碼蓋上貼圖；"
