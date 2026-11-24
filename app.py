@@ -1,12 +1,15 @@
 # =========================================================================
 # 🐦 小鳥幼兒園貼文神器
-# Current Version: v5.2.0 (2026.11.24 Build)｜🟣 Claude 協作版
+# Current Version: v5.3.0 (2026.11.24 Build)｜🟣 Claude 協作版
 #
 # 🧬 開發歷程 (AI 協作夥伴):
 #   ├─ v3.0.0 ~ v3.2.0 ── 🔵 Google Gemini 協作開發
 #   └─ v3.3.0 起 ──────── 🟣 Anthropic Claude 協作開發
 #
 # 📄 變更日誌 (Changelog):
+# [2026.11.24] v5.3.0 🟣Claude - 🙈 名單提前：
+#   「本篇照片是哪些班級？」與未同意名單移到步驟 3（上傳照片之前），老師挑照片時就能先避開；
+#   合照或非用不可的照片，產生後在肖像權確認區用貼圖遮臉；確認區沿用步驟 3 的班級，不必再選。
 # [2026.11.24] v5.2.0 🟣Claude - 🙈 未同意名單：
 #   肖像權確認區讀取 Google 試算表「未同意名單」工作表（班級選項來自「班級清單」工作表）；
 #   老師先選本篇照片的班級（可複選，或一鍵「全園」），畫面列出這些班級未同意公開的孩子與辨認提示；
@@ -65,7 +68,7 @@ from google.genai import types as genai_types
 from PIL import Image, ImageFilter, ImageOps
 from pydantic import BaseModel
 
-APP_VERSION = "v5.2.0"
+APP_VERSION = "v5.3.0"
 MAX_FB_PHOTOS = 20
 STICKERS = {"笑臉": "smile", "星星": "star", "愛心": "heart", "花朵": "flower"}
 MAX_SELECTED = 10
@@ -1109,6 +1112,43 @@ with col2:
 # --- 📸 步驟 3：匯入素材與進階設定 ---
 st.markdown("---")
 st.subheader("📸 步驟 3：匯入素材與進階設定")
+
+
+# --- 🙈 未同意名單：挑照片、上傳之前就先看【v5.3.0】---
+def _reset_consent():
+  st.session_state.consent_ok = False
+
+
+consent_data, consent_err = None, "尚未設定 Google 試算表（HISTORY_URL / HISTORY_TOKEN）"
+if history_enabled():
+  consent_data, consent_err = fetch_consent(HISTORY_URL, HISTORY_TOKEN)
+picked_classes = []
+consent_kids = None  # None：還沒選班級
+with st.container(border=True):
+  if consent_data is None:
+    st.warning(f"⚠️ 讀不到「未同意名單」（{consent_err}）。請自行對照紙本名單，挑照片時避開未同意公開的孩子。")
+  else:
+    st.markdown("**🙈 本篇照片是哪些班級？**（可複選；全園活動請點「全園」）")
+    picked_classes = st.pills(
+        "班級", [ALL_CLASSES] + consent_data["classes"], selection_mode="multi",
+        key="consent_classes", on_change=_reset_consent, label_visibility="collapsed",
+    ) or []
+    consent_kids = consent_scope(consent_data, picked_classes)
+    if consent_kids is None:
+      st.info("👆 挑照片前請先選班級，這裡會列出未同意公開的孩子。")
+    elif consent_kids:
+      lines = "\n".join(
+          f"- **{k['name']}**（{k['class'] or '未填班級'}）" + (f"｜{k['hint']}" if k["hint"] else "")
+          for k in consent_kids)
+      st.warning(f"這 {len(consent_kids)} 位孩子**未同意公開**。挑照片時請盡量避開他們；"
+                 f"合照或效果很好非用不可的，產生貼文後再用貼圖遮臉：\n\n{lines}")
+    else:
+      st.success("✅ 所選班級的孩子都已同意公開。")
+  if st.button("🔄 重新讀取名單（剛改過試算表時按）", key="consent_reload"):
+    fetch_consent.clear()
+    st.session_state.consent_ok = False
+    st.rerun()
+
 opt1, opt2 = st.columns(2)
 with opt1:
   enable_blur = st.toggle(
@@ -1257,7 +1297,7 @@ if generate_btn:
         st.session_state.ver_pick = 0
         for k in list(st.session_state.keys()):
           if k.startswith(("edit_ig_", "edit_fb_", "cover_", "pub_", "fbx_")) or k in (
-              "consent_ok", "consent_classes", "sticker_kind"):
+              "consent_ok", "sticker_kind"):
             del st.session_state[k]
       except Exception as e:
         st.error(f"系統偵測到錯誤：{e}")
@@ -1320,39 +1360,17 @@ if result:
             + (f"\n\n讀到的文字：{result['shot_text']}" if result.get("shot_text") else ""))
   st.markdown("### 🛡️ AI 嚴選照片｜肖像權確認")
 
-  def _reset_consent():
-    st.session_state.consent_ok = False
-
-  # ---------- 🙈 未同意名單：先選班級，列出要遮臉的孩子【v5.2.0】----------
-  consent_data, consent_err = None, "尚未設定 Google 試算表（HISTORY_URL / HISTORY_TOKEN）"
-  if history_enabled():
-    consent_data, consent_err = fetch_consent(HISTORY_URL, HISTORY_TOKEN)
-  picked_classes = []
-  consent_kids = None  # None：還沒選班級
-  with st.container(border=True):
-    if consent_data is None:
-      st.warning(f"⚠️ 讀不到「未同意名單」（{consent_err}）。請自行對照紙本名單，確認照片中沒有未同意公開的孩子。")
+  # 🙈 沿用步驟 3 選的班級，提醒要遮的孩子【v5.3.0】
+  if consent_data is not None:
+    if consent_kids is None:
+      st.info("🙈 還沒選本篇照片的班級，請回到上方步驟 3 選擇，下方才能勾選確認。")
+    elif consent_kids:
+      names = "、".join(f"**{k['name']}**（{k['class']}）" if k["class"] else f"**{k['name']}**"
+                       for k in consent_kids)
+      st.warning(f"🙈 本篇班級：{'、'.join(picked_classes)}｜請遮住：{names}\n\n"
+                 "遮不乾淨的照片請換掉。要改班級請回到上方步驟 3。")
     else:
-      st.markdown("**🙈 本篇照片是哪些班級？**（可複選；全園活動請點「全園」）")
-      picked_classes = st.pills(
-          "班級", [ALL_CLASSES] + consent_data["classes"], selection_mode="multi",
-          key="consent_classes", on_change=_reset_consent, label_visibility="collapsed",
-      ) or []
-      consent_kids = consent_scope(consent_data, picked_classes)
-      if consent_kids is None:
-        st.info("👆 請先選擇班級，這裡會列出需要遮臉的孩子。")
-      elif consent_kids:
-        lines = "\n".join(
-            f"- **{k['name']}**（{k['class'] or '未填班級'}）" + (f"｜{k['hint']}" if k["hint"] else "")
-            for k in consent_kids)
-        st.warning(f"這 {len(consent_kids)} 位孩子**未同意公開**，請在下方照片中遮住他們的臉；"
-                   f"遮不乾淨的照片請換掉：\n\n{lines}")
-      else:
-        st.success("✅ 所選班級的孩子都已同意公開，不用遮臉。")
-    if st.button("🔄 重新讀取名單（剛改過試算表時按）", key="consent_reload"):
-      fetch_consent.clear()
-      st.session_state.consent_ok = False
-      st.rerun()
+      st.success(f"🙈 本篇班級：{'、'.join(picked_classes)}｜孩子都已同意公開，不用遮臉。")
 
   st.caption(
       "照片上的 ① ② ③ 是 AI 找到的臉。請按該照片下方的號碼蓋上貼圖；再按一次可取消。"
@@ -1515,7 +1533,7 @@ if result:
   consent = st.checkbox(consent_label, key="consent_ok", disabled=not can_confirm) and can_confirm
 
   if not can_confirm:
-    st.info("請先在上方「🙈 本篇照片是哪些班級？」選擇班級，才能勾選確認。")
+    st.info("請先回到上方步驟 3「🙈 本篇照片是哪些班級？」選擇班級，才能勾選確認。")
   elif not consent:
     st.info("勾選上方確認後，才會出現下載按鈕與可儲存的照片。")
   else:
